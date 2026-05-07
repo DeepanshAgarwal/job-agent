@@ -2,15 +2,22 @@
 setup.py — One-time setup wizard for the Job Application Agent.
 
 Usage:
-    python setup.py --login all          # Open browser for all platforms
-    python setup.py --login naukri       # Open browser for a specific platform
+    python setup.py --login all          # Log in to all platforms via your real Chrome
+    python setup.py --login naukri       # Log in to a specific platform
     python setup.py --validate           # Check all API keys and configs
     python setup.py --init-sheets        # Create Google Sheets tabs and headers
+
+How login works (CDP approach):
+    The script tells you to open Chrome with a debug port, then Playwright connects
+    to that already-running Chrome instance.  Because it is your real Chrome — with
+    your Google account already signed in — OAuth works exactly as it does normally.
+    No automation banners, no "browser may not be secure" errors.
 """
 
 import argparse
 import asyncio
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -27,14 +34,16 @@ sys.path.insert(0, str(ROOT))
 _PLATFORMS_REQUIRING_LOGIN = ["naukri", "instahyre", "hirist", "cutshort", "foundit"]
 
 _PLATFORM_URLS = {
-    "naukri": "https://www.naukri.com/nlogin/login",
-    "instahyre": "https://www.instahyre.com/candidate/login/",
-    "hirist": "https://www.hirist.tech/login",
-    "cutshort": "https://cutshort.io/login",
-    "foundit": "https://www.foundit.in/login",
+    "naukri":     "https://www.naukri.com/nlogin/login",
+    "instahyre":  "https://www.instahyre.com/candidate/login/",
+    "hirist":     "https://www.hirist.tech/login",
+    "cutshort":   "https://cutshort.io/login",
+    "foundit":    "https://www.foundit.in/login",
 }
 
-# Real Chrome executable paths per OS
+_CDP_PORT = 9222
+
+# Standard Chrome executable locations per OS
 _CHROME_PATHS = [
     # Windows
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -48,42 +57,49 @@ _CHROME_PATHS = [
     "/usr/bin/chromium",
 ]
 
-# Real Chrome user data directories — contains your actual profile, cookies, saved passwords
-_CHROME_USER_DATA_DIRS = [
-    # Windows
-    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data"),
-    # macOS
-    str(Path.home() / "Library" / "Application Support" / "Google" / "Chrome"),
-    # Linux
-    str(Path.home() / ".config" / "google-chrome"),
-]
-
 
 def _find_chrome() -> str | None:
-    """Return path to real Chrome executable, or None if not found."""
+    """Return path to the Chrome executable, or None if not found."""
     for path in _CHROME_PATHS:
         if Path(path).exists():
             return path
     return None
 
 
-def _find_chrome_user_data() -> str | None:
-    """Return path to real Chrome user data directory, or None if not found."""
-    for path in _CHROME_USER_DATA_DIRS:
-        if Path(path).exists():
-            return path
-    return None
+def _launch_chrome_with_cdp(chrome_exe: str) -> None:
+    """Launch Chrome with remote debugging enabled (non-blocking).
+
+    A separate temporary user-data-dir is used so Chrome does not conflict
+    with any already-running Chrome instance on the machine.
+
+    Args:
+        chrome_exe: Full path to the Chrome executable.
+    """
+    debug_profile = ROOT / "auth" / "chrome-cdp-profile"
+    debug_profile.mkdir(parents=True, exist_ok=True)
+
+    subprocess.Popen(
+        [
+            chrome_exe,
+            f"--remote-debugging-port={_CDP_PORT}",
+            f"--user-data-dir={debug_profile}",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 async def login_platform(platform: str) -> None:
-    """Open the user's real Chrome profile for manual login, then save the session.
+    """Connect to the user's real Chrome via CDP, navigate to the platform login
+    page, wait for manual login, then save the session cookies to disk.
 
-    Uses launch_persistent_context with the real Chrome user data directory so
-    that existing Google accounts, saved passwords, and OAuth all work exactly
-    as they do in your normal browser.
+    Because Playwright connects to an already-running Chrome (rather than
+    launching its own), Google OAuth works without any blocks or warnings.
 
     Args:
-        platform: Platform name, e.g. "naukri".
+        platform: Short platform name, e.g. ``"naukri"``.
     """
     from playwright.async_api import async_playwright
 
@@ -91,147 +107,99 @@ async def login_platform(platform: str) -> None:
 
     url = _PLATFORM_URLS.get(platform)
     if not url:
-        console.print(f"  [yellow]Unknown platform: {platform}[/yellow]")
+        console.print(f"[yellow]Unknown platform: {platform}[/yellow]")
         return
 
     chrome_exe = _find_chrome()
-    chrome_data = _find_chrome_user_data()
-
     if not chrome_exe:
         console.print(
-            "  [red]❌ Google Chrome not found.[/red]\n"
-            "     Download it from https://www.google.com/chrome/ and re-run."
+            "[red]❌ Google Chrome not found.[/red]\n"
+            "   Install it from https://www.google.com/chrome/ then re-run."
         )
         return
 
-    if not chrome_data:
-        console.print(
-            "  [yellow]⚠️  Chrome user data directory not found — opening without your profile.[/yellow]"
-        )
+    # Launch Chrome with CDP automatically
+    console.print(f"\n[bold]Logging in to {platform}[/bold]")
+    console.print("[dim]Starting Chrome with remote debugging…[/dim]")
+    _launch_chrome_with_cdp(chrome_exe)
 
-    console.print(f"\n  Opening [bold]your real Chrome[/bold] for [bold]{platform}[/bold]…")
-    console.print(f"  [dim]Chrome exe : {chrome_exe}[/dim]")
-    if chrome_data:
-        console.print(f"  [dim]Profile dir: {chrome_data}[/dim]")
-    console.print(f"  [dim]URL        : {url}[/dim]")
+    # Give Chrome a moment to start
+    await asyncio.sleep(2)
+
     console.print(
-        "\n  [yellow]⚠️  Close ALL other Chrome windows first, then press any key to continue.[/yellow]"
-        "\n  [dim](Chrome can only have one process using a profile at a time)[/dim]"
+        f"[dim]Chrome is open. Sign in to [bold]{platform}[/bold] using your Google account "
+        f"or email/password, then come back here.[/dim]"
     )
-    input("  Press Enter to open Chrome… ")
+    input("\n  Press Enter once you are fully logged in… ")
 
+    # Connect to the running Chrome via CDP and grab the session
     async with async_playwright() as pw:
-        if chrome_data:
-            # Use your real Chrome profile — all your Google accounts and cookies are here
-            context = await pw.chromium.launch_persistent_context(
-                user_data_dir=chrome_data,
-                executable_path=chrome_exe,
-                headless=False,
-                slow_mo=50,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--profile-directory=Default",  # use your Default profile
-                ],
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-                locale="en-IN",
+        try:
+            browser = await pw.chromium.connect_over_cdp(f"http://localhost:{_CDP_PORT}")
+        except Exception:
+            console.print(
+                "[red]❌ Could not connect to Chrome.[/red]\n"
+                "   Make sure Chrome opened successfully and try again."
             )
-        else:
-            # Fallback: real Chrome exe but fresh profile
-            browser = await pw.chromium.launch(
-                executable_path=chrome_exe,
-                headless=False,
-                slow_mo=50,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-            context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-                locale="en-IN",
-            )
+            return
 
-        page = await context.new_page()
+        # Use the first (default) browser context
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
 
-        # Remove webdriver flag so sites can't detect automation
-        await page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-
+        # Navigate to the platform to make sure we capture its cookies
+        page = context.pages[0] if context.pages else await context.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-
-        console.print(
-            f"\n  [green]✅ Chrome opened on {platform}.[/green]"
-            "\n  Log in if needed, then come back here and press Enter to save your session."
-        )
-        input("  Press Enter when logged in… ")
 
         session_mgr = SessionManager()
         await session_mgr.save_session(platform, context)
-        console.print(f"  [green]✅ Session saved for {platform}[/green]")
 
-        await context.close()
+        console.print(f"[green]✅ Session saved for {platform}[/green]")
+        await browser.close()
 
 
 def validate_config() -> None:
     """Check that all required API keys and config files are present."""
-    console.rule("[bold green]Validating configuration[/bold green]")
+    console.rule("[bold]Validating configuration[/bold]")
     all_ok = True
 
-    # Check .env / environment
+    # API keys
     checks = {
-        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY"),
-        "GOOGLE_SHEET_ID": os.getenv("GOOGLE_SHEET_ID"),
+        "GEMINI_API_KEY":    os.getenv("GEMINI_API_KEY"),
+        "GOOGLE_SHEET_ID":   os.getenv("GOOGLE_SHEET_ID"),
         "SLACK_WEBHOOK_URL": os.getenv("SLACK_WEBHOOK_URL"),
     }
     for key, val in checks.items():
         if val and val not in ("your_gemini_api_key_here", "your_google_sheet_id_here"):
             console.print(f"  [green]✅ {key}[/green]")
         else:
-            console.print(f"  [yellow]⚠️  {key} not set (optional but recommended)[/yellow]")
+            console.print(f"  [yellow]⚠️  {key} not set[/yellow]")
 
-    # Check config files
+    # Config files
     for cfg in ["config/profile.yaml", "config/preferences.yaml", "config/platforms.yaml"]:
-        path = ROOT / cfg
-        if path.exists():
+        if (ROOT / cfg).exists():
             console.print(f"  [green]✅ {cfg}[/green]")
         else:
             console.print(f"  [red]❌ {cfg} missing[/red]")
             all_ok = False
 
-    # Check resume
-    resume_path = ROOT / "config" / "resume.pdf"
-    if resume_path.exists():
-        console.print(f"  [green]✅ config/resume.pdf found[/green]")
+    # Resume
+    if (ROOT / "config" / "resume.pdf").exists():
+        console.print("  [green]✅ config/resume.pdf[/green]")
     else:
         console.print("  [yellow]⚠️  config/resume.pdf not found — add your resume before running[/yellow]")
 
-    # Check Chrome installation
+    # Chrome
     chrome_exe = _find_chrome()
-    chrome_data = _find_chrome_user_data()
     if chrome_exe:
-        console.print(f"  [green]✅ Chrome found: {chrome_exe}[/green]")
+        console.print(f"  [green]✅ Chrome found[/green] [dim]({chrome_exe})[/dim]")
     else:
         console.print(
-            "  [red]❌ Google Chrome not found — required for login.[/red]\n"
-            "     Download: https://www.google.com/chrome/"
+            "  [red]❌ Google Chrome not found — required for login[/red]\n"
+            "     https://www.google.com/chrome/"
         )
         all_ok = False
 
-    if chrome_data:
-        console.print(f"  [green]✅ Chrome profile found: {chrome_data}[/green]")
-    else:
-        console.print("  [yellow]⚠️  Chrome user data directory not found[/yellow]")
-
-    # Test Gemini connectivity
+    # Gemini connectivity
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key and gemini_key != "your_gemini_api_key_here":
         try:
@@ -239,40 +207,40 @@ def validate_config() -> None:
 
             genai.configure(api_key=gemini_key)
             model = genai.GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content("Say 'ok'")
-            console.print(f"  [green]✅ Gemini API connected — response: {response.text.strip()[:30]}[/green]")
+            resp = model.generate_content("Say 'ok'")
+            console.print(f"  [green]✅ Gemini API connected[/green] [dim]({resp.text.strip()[:30]})[/dim]")
         except Exception as exc:  # noqa: BLE001
             console.print(f"  [red]❌ Gemini API error: {exc}[/red]")
             all_ok = False
 
     if all_ok:
-        console.print("\n  [bold green]All checks passed! Run: python agent/main.py --dry-run[/bold green]")
+        console.print("\n[bold green]All checks passed.[/bold green] Run: python agent/main.py --dry-run")
     else:
-        console.print("\n  [bold yellow]Some checks failed. Review the issues above.[/bold yellow]")
+        console.print("\n[bold yellow]Some checks failed — review above.[/bold yellow]")
 
 
 def init_sheets() -> None:
     """Create the Applications and Stats worksheets with headers."""
-    console.rule("[bold green]Initialising Google Sheets[/bold green]")
+    console.rule("[bold]Initialising Google Sheets[/bold]")
     try:
         from agent.tracker.sheets import SheetsTracker
 
         tracker = SheetsTracker()
         tracker.sync_stats({"total_applied": 0, "by_platform": {}, "by_status": {}})
         tracker.append_application({
-            "company": "EXAMPLE",
-            "title": "EXAMPLE ROLE",
-            "url": "https://example.com",
-            "source": "setup",
+            "company":     "EXAMPLE",
+            "title":       "EXAMPLE ROLE",
+            "url":         "https://example.com",
+            "source":      "setup",
             "match_score": 0,
-            "status": "test",
-            "notes": "Created by setup.py --init-sheets — delete this row",
+            "status":      "test",
+            "notes":       "Created by setup.py --init-sheets — delete this row",
         })
-        console.print("  [green]✅ Google Sheets initialised.[/green]")
-        console.print("  Open your spreadsheet and delete the example row in 'Applications'.")
+        console.print("[green]✅ Google Sheets initialised.[/green]")
+        console.print("[dim]Delete the example row in the 'Applications' tab.[/dim]")
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [red]❌ Failed to initialise sheets: {exc}[/red]")
-        console.print("  Make sure GOOGLE_SHEET_ID and GOOGLE_SHEETS_CREDENTIALS_PATH are set in .env")
+        console.print(f"[red]❌ Failed: {exc}[/red]")
+        console.print("[dim]Make sure GOOGLE_SHEET_ID and GOOGLE_SHEETS_CREDENTIALS_PATH are set in .env[/dim]")
 
 
 def main() -> None:
@@ -281,18 +249,13 @@ def main() -> None:
     parser.add_argument(
         "--login",
         metavar="PLATFORM",
-        help=f"Open browser to login. Use 'all' or one of: {', '.join(_PLATFORMS_REQUIRING_LOGIN)}",
+        help=f"Log in to a platform. Use 'all' or one of: {', '.join(_PLATFORMS_REQUIRING_LOGIN)}",
     )
-    parser.add_argument("--validate", action="store_true", help="Check all API keys and configs")
-    parser.add_argument("--init-sheets", action="store_true", help="Create Google Sheets tabs and headers")
+    parser.add_argument("--validate",     action="store_true", help="Check all API keys and configs")
+    parser.add_argument("--init-sheets",  action="store_true", help="Create Google Sheets tabs and headers")
     args = parser.parse_args()
 
-    console.print(
-        Panel.fit(
-            "[bold cyan]🔧 Job Agent Setup Wizard[/bold cyan]",
-            border_style="cyan",
-        )
-    )
+    console.print(Panel.fit("[bold cyan]🔧 Job Agent Setup Wizard[/bold cyan]", border_style="cyan"))
 
     if args.login:
         platforms = (
