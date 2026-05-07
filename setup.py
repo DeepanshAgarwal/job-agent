@@ -39,12 +39,13 @@ sys.path.insert(0, str(ROOT))
 _CDP_PORT = 9222
 
 # Preferred Gemini models in priority order (first available one is used).
-# The SDK will try each in turn and pick the first that works for your account.
+# Must use the full "models/" prefix as returned by the SDK's models.list().
 _GEMINI_MODEL_PRIORITY = [
-    "gemini-2.0-flash-lite",   # newest lightweight free model
-    "gemini-2.0-flash",        # slightly heavier but widely available
-    "gemini-1.5-flash",        # older stable free model
-    "gemini-1.5-flash-8b",     # smallest 1.5 variant
+    "models/gemini-2.0-flash-lite",
+    "models/gemini-2.0-flash",
+    "models/gemini-2.5-flash",
+    "models/gemini-flash-lite-latest",
+    "models/gemini-flash-latest",
 ]
 
 # Standard Chrome executable locations per OS
@@ -258,7 +259,6 @@ def validate_config() -> None:
                     f"[dim](model: {model} · response: {response_text[:20]})[/dim]"
                 )
             else:
-                # List available models to help diagnose the issue
                 available = [m.name for m in client.models.list()]
                 console.print(
                     "  [red]❌ No working Gemini model found for your account.[/red]\n"
