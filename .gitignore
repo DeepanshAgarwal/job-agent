@@ -219,6 +219,7 @@ __marimo__/
 
 # Job Agent specific
 auth/*.json
+auth/chrome-cdp-profile
 auth/*_session.json
 data/*.db
 .env
