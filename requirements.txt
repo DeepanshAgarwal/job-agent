@@ -1,26 +1,26 @@
 # Scraping
-jobspy==1.1.4
-playwright==1.44.0
+python-jobspy>=0.31.0        # NOTE: package name is python-jobspy, NOT jobspy
+playwright>=1.44.0
 
 # AI & ML
-google-generativeai==0.7.0
-sentence-transformers==3.0.0
-pymupdf==1.24.0
-ollama==0.2.0
+google-generativeai>=0.7.0
+sentence-transformers>=2.7.0
+pymupdf>=1.24.0              # imports as "fitz" in code
+ollama>=0.2.0
 
 # Storage & Tracking
-gspread==6.1.0
-google-auth==2.29.0
+gspread>=6.0.0
+google-auth>=2.29.0
 
 # Notifications
-slack-sdk==3.27.0
+slack-sdk>=3.27.0
 
 # Utilities
-pydantic==2.7.0
-pyyaml==6.0.1
-python-dotenv==1.0.1
-loguru==0.7.2
-rich==13.7.0
+pydantic>=2.7.0
+pyyaml>=6.0.0
+python-dotenv>=1.0.0
+loguru>=0.7.0
+rich>=13.7.0
 
 # UI (Phase 2)
-streamlit==1.35.0
+streamlit>=1.35.0
