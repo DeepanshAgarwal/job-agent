@@ -34,7 +34,7 @@ _PLATFORM_URLS = {
     "foundit": "https://www.foundit.in/login",
 }
 
-# Common Chrome installation paths per OS
+# Real Chrome executable paths per OS
 _CHROME_PATHS = [
     # Windows
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -48,20 +48,39 @@ _CHROME_PATHS = [
     "/usr/bin/chromium",
 ]
 
+# Real Chrome user data directories — contains your actual profile, cookies, saved passwords
+_CHROME_USER_DATA_DIRS = [
+    # Windows
+    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data"),
+    # macOS
+    str(Path.home() / "Library" / "Application Support" / "Google" / "Chrome"),
+    # Linux
+    str(Path.home() / ".config" / "google-chrome"),
+]
+
 
 def _find_chrome() -> str | None:
-    """Return the path to the user's real Chrome/Chromium installation, or None."""
+    """Return path to real Chrome executable, or None if not found."""
     for path in _CHROME_PATHS:
         if Path(path).exists():
             return path
     return None
 
 
-async def login_platform(platform: str) -> None:
-    """Open a headed browser for manual login, then save the session.
+def _find_chrome_user_data() -> str | None:
+    """Return path to real Chrome user data directory, or None if not found."""
+    for path in _CHROME_USER_DATA_DIRS:
+        if Path(path).exists():
+            return path
+    return None
 
-    Uses the user's real Chrome installation so Google OAuth is not blocked.
-    Falls back to Playwright's bundled Chromium if Chrome is not found.
+
+async def login_platform(platform: str) -> None:
+    """Open the user's real Chrome profile for manual login, then save the session.
+
+    Uses launch_persistent_context with the real Chrome user data directory so
+    that existing Google accounts, saved passwords, and OAuth all work exactly
+    as they do in your normal browser.
 
     Args:
         platform: Platform name, e.g. "naukri".
@@ -75,67 +94,91 @@ async def login_platform(platform: str) -> None:
         console.print(f"  [yellow]Unknown platform: {platform}[/yellow]")
         return
 
-    chrome_path = _find_chrome()
-    if chrome_path:
-        console.print(f"  [dim]Using real Chrome at: {chrome_path}[/dim]")
-    else:
+    chrome_exe = _find_chrome()
+    chrome_data = _find_chrome_user_data()
+
+    if not chrome_exe:
         console.print(
-            "  [yellow]⚠️  Real Chrome not found — falling back to Playwright Chromium.[/yellow]\n"
-            "  [yellow]   If Google OAuth login is blocked, install Google Chrome and retry.[/yellow]"
+            "  [red]❌ Google Chrome not found.[/red]\n"
+            "     Download it from https://www.google.com/chrome/ and re-run."
+        )
+        return
+
+    if not chrome_data:
+        console.print(
+            "  [yellow]⚠️  Chrome user data directory not found — opening without your profile.[/yellow]"
         )
 
-    console.print(f"\n  Opening browser for [bold]{platform}[/bold]…")
-    console.print(f"  URL: {url}")
-    console.print("  [dim]Log in manually in the browser window, then come back here and press Enter.[/dim]")
+    console.print(f"\n  Opening [bold]your real Chrome[/bold] for [bold]{platform}[/bold]…")
+    console.print(f"  [dim]Chrome exe : {chrome_exe}[/dim]")
+    if chrome_data:
+        console.print(f"  [dim]Profile dir: {chrome_data}[/dim]")
+    console.print(f"  [dim]URL        : {url}[/dim]")
+    console.print(
+        "\n  [yellow]⚠️  Close ALL other Chrome windows first, then press any key to continue.[/yellow]"
+        "\n  [dim](Chrome can only have one process using a profile at a time)[/dim]"
+    )
+    input("  Press Enter to open Chrome… ")
 
     async with async_playwright() as pw:
-        launch_kwargs: dict = {
-            "headless": False,
-            # Slow down actions slightly so pages load before we interact
-            "slow_mo": 100,
-            # Pass args that make Chrome behave more like a real user session
-            "args": [
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-            ],
-        }
-
-        if chrome_path:
-            # Use the real Chrome executable — Google won't block this
-            launch_kwargs["executable_path"] = chrome_path
-            browser = await pw.chromium.launch(**launch_kwargs)
+        if chrome_data:
+            # Use your real Chrome profile — all your Google accounts and cookies are here
+            context = await pw.chromium.launch_persistent_context(
+                user_data_dir=chrome_data,
+                executable_path=chrome_exe,
+                headless=False,
+                slow_mo=50,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--profile-directory=Default",  # use your Default profile
+                ],
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+                locale="en-IN",
+            )
         else:
-            browser = await pw.chromium.launch(**launch_kwargs)
-
-        # Create a context that looks like a real user (not a bot)
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 800},
-            locale="en-IN",
-        )
+            # Fallback: real Chrome exe but fresh profile
+            browser = await pw.chromium.launch(
+                executable_path=chrome_exe,
+                headless=False,
+                slow_mo=50,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+            )
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+                locale="en-IN",
+            )
 
         page = await context.new_page()
 
-        # Hide the webdriver flag that sites use to detect automation
+        # Remove webdriver flag so sites can't detect automation
         await page.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
 
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
 
-        console.print("\n  Waiting for you to log in…  (Press Enter when done) ", end="")
-        input()
+        console.print(
+            f"\n  [green]✅ Chrome opened on {platform}.[/green]"
+            "\n  Log in if needed, then come back here and press Enter to save your session."
+        )
+        input("  Press Enter when logged in… ")
 
         session_mgr = SessionManager()
         await session_mgr.save_session(platform, context)
         console.print(f"  [green]✅ Session saved for {platform}[/green]")
 
         await context.close()
-        await browser.close()
 
 
 def validate_config() -> None:
@@ -172,14 +215,21 @@ def validate_config() -> None:
         console.print("  [yellow]⚠️  config/resume.pdf not found — add your resume before running[/yellow]")
 
     # Check Chrome installation
-    chrome_path = _find_chrome()
-    if chrome_path:
-        console.print(f"  [green]✅ Chrome found at: {chrome_path}[/green]")
+    chrome_exe = _find_chrome()
+    chrome_data = _find_chrome_user_data()
+    if chrome_exe:
+        console.print(f"  [green]✅ Chrome found: {chrome_exe}[/green]")
     else:
         console.print(
-            "  [yellow]⚠️  Google Chrome not found. Install it for reliable login on all platforms.[/yellow]\n"
+            "  [red]❌ Google Chrome not found — required for login.[/red]\n"
             "     Download: https://www.google.com/chrome/"
         )
+        all_ok = False
+
+    if chrome_data:
+        console.print(f"  [green]✅ Chrome profile found: {chrome_data}[/green]")
+    else:
+        console.print("  [yellow]⚠️  Chrome user data directory not found[/yellow]")
 
     # Test Gemini connectivity
     gemini_key = os.getenv("GEMINI_API_KEY")
@@ -208,7 +258,6 @@ def init_sheets() -> None:
         from agent.tracker.sheets import SheetsTracker
 
         tracker = SheetsTracker()
-        # Trigger sheet creation by calling sync_stats with empty stats
         tracker.sync_stats({"total_applied": 0, "by_platform": {}, "by_status": {}})
         tracker.append_application({
             "company": "EXAMPLE",
