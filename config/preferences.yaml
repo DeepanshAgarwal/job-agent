@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────
+# Job Search Preferences — tune these to filter relevant jobs
+# ─────────────────────────────────────────────────────────────
+
+# Target job titles (searched verbatim on each platform)
+roles:
+  - "Software Engineer"
+  - "Backend Engineer"
+  - "Python Developer"
+  - "Full Stack Engineer"
+
+# Keywords that MUST appear in a job description to be considered
+keywords_must_have:
+  - "Python"
+
+# Nice-to-have keywords (boost score, not required)
+keywords_nice_to_have:
+  - "FastAPI"
+  - "Django"
+  - "Kubernetes"
+  - "AWS"
+  - "PostgreSQL"
+
+# Jobs containing any of these keywords will be skipped immediately
+keywords_blacklist:
+  - "PHP"
+  - "WordPress"
+  - "Magento"
+  - "Salesforce"
+  - "SAP"
+  - "mainframe"
+
+# Target locations (used in search queries)
+locations:
+  - "Bangalore"
+  - "Remote"
+  - "Hyderabad"
+
+# Set to true to only consider fully remote roles
+remote_only: false
+
+# Salary filters
+salary:
+  min_lpa: 12           # Minimum LPA (Indian roles)
+  max_lpa: 40           # Maximum LPA (Indian roles)
+  min_usd_yearly: 80000 # Minimum USD/year (US roles)
+
+# Seniority levels to target
+seniority_levels:
+  - "mid"
+  - "senior"
+
+# Seniority levels to exclude
+exclude_levels:
+  - "intern"
+  - "junior"
+  - "entry"
+
+# Companies to always skip (body-shopping / low-quality)
+company_blacklist:
+  - "Infosys"
+  - "Wipro"
+  - "TCS"
+  - "HCL"
+  - "Cognizant"
+  - "Mphasis"
+  - "Tech Mahindra"
+
+# Companies to always target regardless of other filters
+company_whitelist: []
+
+# Employment type
+job_type: "fulltime"   # fulltime | contract | parttime
+
+# Only consider jobs posted within this many hours
+posted_within_hours: 24
+
+# Minimum AI match score (0-100) required to apply
+min_match_score: 65
+
+# Safety cap: maximum applications submitted per day
+max_applications_per_day: 15

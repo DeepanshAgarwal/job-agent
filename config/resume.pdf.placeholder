@@ -1,0 +1,20 @@
+PLACE YOUR RESUME HERE
+======================
+
+This file is a placeholder.  Please replace it with your actual resume:
+
+  config/resume.pdf
+
+Steps:
+  1. Copy your resume PDF into this folder:
+       cp ~/path/to/your/resume.pdf config/resume.pdf
+
+  2. Verify the path matches the value in config/profile.yaml:
+       resume:
+         path: "config/resume.pdf"
+
+  3. Delete this placeholder file once your resume is in place.
+
+Note: The resume is read by the AI resume parser (agent/ai/resume_parser.py)
+using PyMuPDF and Google Gemini to extract structured information such as
+skills, work experience, education, and total years of experience.
