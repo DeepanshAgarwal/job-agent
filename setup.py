@@ -38,6 +38,9 @@ sys.path.insert(0, str(ROOT))
 
 _CDP_PORT = 9222
 
+# Best available free-tier Gemini model (no billing required)
+_GEMINI_MODEL = "gemini-1.5-flash-8b"
+
 # Standard Chrome executable locations per OS
 _CHROME_PATHS = [
     # Windows
@@ -84,7 +87,7 @@ def _launch_chrome_with_cdp(chrome_exe: str) -> subprocess.Popen:
     """Launch Chrome with remote debugging enabled (non-blocking).
 
     A dedicated profile directory is used so this Chrome instance never
-    conflicts with the user’s normal Chrome.
+    conflicts with the user's normal Chrome.
 
     Args:
         chrome_exe: Full path to the Chrome executable.
@@ -216,7 +219,7 @@ def validate_config() -> None:
     else:
         console.print("  [yellow]⚠️  No platforms enabled in platforms.yaml[/yellow]")
 
-    # Gemini connectivity (new google-genai SDK)
+    # Gemini connectivity
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key and gemini_key != "your_gemini_api_key_here":
         try:
@@ -224,10 +227,13 @@ def validate_config() -> None:
 
             client = genai.Client(api_key=gemini_key)
             resp = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model=_GEMINI_MODEL,
                 contents="Say 'ok'",
             )
-            console.print(f"  [green]✅ Gemini API connected[/green] [dim]({resp.text.strip()[:30]})[/dim]")
+            console.print(
+                f"  [green]✅ Gemini API connected[/green] "
+                f"[dim](model: {_GEMINI_MODEL} · response: {resp.text.strip()[:20]})[/dim]"
+            )
         except Exception as exc:  # noqa: BLE001
             console.print(f"  [red]❌ Gemini API error: {exc}[/red]")
             all_ok = False
