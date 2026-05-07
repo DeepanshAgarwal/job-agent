@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────────
+# Platform Configuration — enable/disable scrapers and submitters
+# ─────────────────────────────────────────────────────────────
+
+scrape_from:
+  naukri:
+    enabled: true
+  instahyre:
+    enabled: true
+  hirist:
+    enabled: true
+  cutshort:
+    enabled: true
+  foundit:
+    enabled: true
+  linkedin:
+    enabled: true
+  indeed:
+    enabled: true
+
+apply_on:
+  greenhouse:
+    enabled: true
+  lever:
+    enabled: true
+  naukri:
+    enabled: true
+  instahyre:
+    enabled: true
+  linkedin_easy_apply:
+    enabled: true
+  generic:
+    enabled: true

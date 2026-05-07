@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────
+# Personal Profile — fill in your real details before first run
+# ─────────────────────────────────────────────────────────────
+
+personal:
+  first_name: "Jane"
+  last_name: "Doe"
+  email: "jane.doe@example.com"
+  phone: "+91-9876543210"
+  location: "Bangalore, India"
+
+links:
+  linkedin: "https://linkedin.com/in/janedoe"
+  github: "https://github.com/janedoe"
+  portfolio: "https://janedoe.dev"
+
+resume:
+  path: "config/resume.pdf"  # place your resume here
+
+# Standard answers used to fill application forms
+standard_answers:
+  notice_period: "30 days"
+  current_ctc: "12 LPA"
+  expected_ctc: "18 LPA"
+  willing_to_relocate: true
+  work_authorization: "Indian citizen, authorized to work in India"
+  years_of_experience: 4
+  highest_education: "B.Tech Computer Science"
+  cover_letter_intro: "I am a passionate software engineer with 4 years of experience building scalable backend systems."
