@@ -1,22 +1,48 @@
 # ─────────────────────────────────────────────────────────────
 # Platform Configuration — enable/disable scrapers and submitters
+#
+# Set enabled: true/false to control which platforms are active.
+# Login sessions are automatically managed for enabled platforms
+# that require authentication (login_required: true).
 # ─────────────────────────────────────────────────────────────
 
 scrape_from:
   naukri:
     enabled: true
+    login_required: true
+    login_url: https://www.naukri.com/nlogin/login
   instahyre:
     enabled: true
+    login_required: true
+    login_url: https://www.instahyre.com/candidate/login/
   hirist:
     enabled: true
+    login_required: true
+    login_url: https://www.hirist.tech/login
   cutshort:
     enabled: true
+    login_required: true
+    login_url: https://cutshort.io/login
   foundit:
     enabled: true
+    login_required: true
+    login_url: https://www.foundit.in/login
   linkedin:
     enabled: true
-  indeed:
+    login_required: true
+    login_url: https://www.linkedin.com/login
+  internshala:
     enabled: true
+    login_required: true
+    login_url: https://internshala.com/login
+  unstop:
+    enabled: true
+    login_required: true
+    login_url: https://unstop.com/login
+  indeed:
+    enabled: false
+    login_required: false
+    login_url: null
 
 apply_on:
   greenhouse:
@@ -26,6 +52,10 @@ apply_on:
   naukri:
     enabled: true
   instahyre:
+    enabled: true
+  internshala:
+    enabled: true
+  unstop:
     enabled: true
   linkedin_easy_apply:
     enabled: true

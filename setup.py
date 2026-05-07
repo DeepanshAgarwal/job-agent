@@ -2,7 +2,7 @@
 setup.py — One-time setup wizard for the Job Application Agent.
 
 Usage:
-    python setup.py --login all          # Log in to all platforms via your real Chrome
+    python setup.py --login all          # Log in to all enabled platforms
     python setup.py --login naukri       # Log in to a specific platform
     python setup.py --validate           # Check all API keys and configs
     python setup.py --init-sheets        # Create Google Sheets tabs and headers
@@ -12,6 +12,10 @@ How login works (CDP approach):
     then connects to that already-running Chrome instance and navigates to the
     platform login page.  Because Chrome was not launched by Playwright, Google
     OAuth works without any blocks or "browser may not be secure" warnings.
+    Chrome is closed automatically once the session is saved.
+
+Platforms are read from config/platforms.yaml.  Only platforms with
+``login_required: true`` and ``enabled: true`` are included in ``--login all``.
 """
 
 import argparse
@@ -21,6 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
@@ -30,16 +35,6 @@ console = Console()
 
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
-
-_PLATFORMS_REQUIRING_LOGIN = ["naukri", "instahyre", "hirist", "cutshort", "foundit"]
-
-_PLATFORM_URLS = {
-    "naukri":    "https://www.naukri.com/nlogin/login",
-    "instahyre": "https://www.instahyre.com/candidate/login/",
-    "hirist":    "https://www.hirist.tech/login",
-    "cutshort":  "https://cutshort.io/login",
-    "foundit":   "https://www.foundit.in/login",
-}
 
 _CDP_PORT = 9222
 
@@ -58,6 +53,25 @@ _CHROME_PATHS = [
 ]
 
 
+def _load_platforms() -> dict:
+    """Load platform config from config/platforms.yaml.
+
+    Returns:
+        Dict of platform name → config for all platforms that require login
+        and are enabled under ``scrape_from``.
+    """
+    platforms_file = ROOT / "config" / "platforms.yaml"
+    if not platforms_file.exists():
+        return {}
+    with platforms_file.open() as f:
+        config = yaml.safe_load(f)
+    result = {}
+    for name, cfg in (config.get("scrape_from") or {}).items():
+        if cfg.get("enabled") and cfg.get("login_required") and cfg.get("login_url"):
+            result[name] = cfg
+    return result
+
+
 def _find_chrome() -> str | None:
     """Return path to the Chrome executable, or None if not found."""
     for path in _CHROME_PATHS:
@@ -66,19 +80,22 @@ def _find_chrome() -> str | None:
     return None
 
 
-def _launch_chrome_with_cdp(chrome_exe: str) -> None:
+def _launch_chrome_with_cdp(chrome_exe: str) -> subprocess.Popen:
     """Launch Chrome with remote debugging enabled (non-blocking).
 
     A dedicated profile directory is used so this Chrome instance never
-    conflicts with the user's normal Chrome.
+    conflicts with the user’s normal Chrome.
 
     Args:
         chrome_exe: Full path to the Chrome executable.
+
+    Returns:
+        The Popen process handle so the caller can terminate Chrome later.
     """
     debug_profile = ROOT / "auth" / "chrome-cdp-profile"
     debug_profile.mkdir(parents=True, exist_ok=True)
 
-    subprocess.Popen(
+    return subprocess.Popen(
         [
             chrome_exe,
             f"--remote-debugging-port={_CDP_PORT}",
@@ -91,24 +108,20 @@ def _launch_chrome_with_cdp(chrome_exe: str) -> None:
     )
 
 
-async def login_platform(platform: str) -> None:
+async def login_platform(platform: str, login_url: str) -> None:
     """Launch Chrome via CDP, navigate to the platform login page, wait for
-    manual login, then save the session cookies to disk.
+    manual login, save the session cookies to disk, then close Chrome.
 
     Because Playwright connects to an already-running Chrome (rather than
     launching its own), Google OAuth works without any blocks or warnings.
 
     Args:
-        platform: Short platform name, e.g. ``"naukri"``.
+        platform:  Short platform name, e.g. ``"naukri"``.
+        login_url: The login page URL for this platform.
     """
     from playwright.async_api import async_playwright
 
     from agent.submitter.session_manager import SessionManager
-
-    url = _PLATFORM_URLS.get(platform)
-    if not url:
-        console.print(f"[yellow]Unknown platform: {platform}[/yellow]")
-        return
 
     chrome_exe = _find_chrome()
     if not chrome_exe:
@@ -119,8 +132,7 @@ async def login_platform(platform: str) -> None:
         return
 
     console.print(f"\n[bold]Logging in to {platform}[/bold]")
-    console.print("[dim]Starting Chrome…[/dim]")
-    _launch_chrome_with_cdp(chrome_exe)
+    chrome_proc = _launch_chrome_with_cdp(chrome_exe)
 
     # Give Chrome time to start before connecting
     await asyncio.sleep(2)
@@ -133,23 +145,26 @@ async def login_platform(platform: str) -> None:
                 "[red]❌ Could not connect to Chrome.[/red]\n"
                 "   Make sure Chrome opened successfully and try again."
             )
+            chrome_proc.terminate()
             return
 
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
         page = context.pages[0] if context.pages else await context.new_page()
 
-        # Navigate to the login page so the user can log in straight away
-        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        console.print(f"[dim]Opened {url}[/dim]")
+        await page.goto(login_url, wait_until="domcontentloaded", timeout=30_000)
         console.print("Log in using your Google account or email/password.")
 
         input("\n  Press Enter once you are fully logged in… ")
 
         session_mgr = SessionManager()
         await session_mgr.save_session(platform, context)
-
         console.print(f"[green]✅ Session saved for {platform}[/green]")
+
         await browser.close()
+
+    # Close Chrome now that the session is captured
+    chrome_proc.terminate()
+    console.print("[dim]Chrome closed.[/dim]")
 
 
 def validate_config() -> None:
@@ -194,15 +209,24 @@ def validate_config() -> None:
         )
         all_ok = False
 
-    # Gemini connectivity
+    # Enabled platforms
+    platforms = _load_platforms()
+    if platforms:
+        console.print(f"  [green]✅ Platforms requiring login: {', '.join(platforms)}[/green]")
+    else:
+        console.print("  [yellow]⚠️  No platforms enabled in platforms.yaml[/yellow]")
+
+    # Gemini connectivity (new google-genai SDK)
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key and gemini_key != "your_gemini_api_key_here":
         try:
-            import google.generativeai as genai  # type: ignore[import]
+            from google import genai  # type: ignore[import]
 
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            resp = model.generate_content("Say 'ok'")
+            client = genai.Client(api_key=gemini_key)
+            resp = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents="Say 'ok'",
+            )
             console.print(f"  [green]✅ Gemini API connected[/green] [dim]({resp.text.strip()[:30]})[/dim]")
         except Exception as exc:  # noqa: BLE001
             console.print(f"  [red]❌ Gemini API error: {exc}[/red]")
@@ -240,11 +264,17 @@ def init_sheets() -> None:
 
 def main() -> None:
     """Parse arguments and run the requested setup step."""
+    platforms = _load_platforms()
+    platform_names = list(platforms.keys())
+
     parser = argparse.ArgumentParser(description="Job Agent — one-time setup wizard")
     parser.add_argument(
         "--login",
         metavar="PLATFORM",
-        help=f"Log in to a platform. Use 'all' or one of: {', '.join(_PLATFORMS_REQUIRING_LOGIN)}",
+        help=(
+            "Log in to a platform. Use 'all' for all enabled platforms, "
+            f"or one of: {', '.join(platform_names) or 'none enabled'}"
+        ),
     )
     parser.add_argument("--validate",    action="store_true", help="Check all API keys and configs")
     parser.add_argument("--init-sheets", action="store_true", help="Create Google Sheets tabs and headers")
@@ -253,11 +283,17 @@ def main() -> None:
     console.print(Panel.fit("[bold cyan]🔧 Job Agent Setup Wizard[/bold cyan]", border_style="cyan"))
 
     if args.login:
-        platforms = (
-            _PLATFORMS_REQUIRING_LOGIN if args.login.lower() == "all" else [args.login.lower()]
-        )
-        for platform in platforms:
-            asyncio.run(login_platform(platform))
+        if args.login.lower() == "all":
+            selected = platforms
+        elif args.login.lower() in platforms:
+            selected = {args.login.lower(): platforms[args.login.lower()]}
+        else:
+            console.print(f"[red]❌ Unknown or disabled platform: {args.login}[/red]")
+            console.print(f"   Enabled platforms: {', '.join(platform_names) or 'none'}")
+            sys.exit(1)
+
+        for name, cfg in selected.items():
+            asyncio.run(login_platform(name, cfg["login_url"]))
 
     if args.validate:
         validate_config()
