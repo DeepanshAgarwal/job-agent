@@ -37,7 +37,7 @@ st.sidebar.header("Controls")
 if st.sidebar.button("▶ Run Agent (Dry Run)", use_container_width=True):
     with st.spinner("Running agent in dry-run mode…"):
         result = subprocess.run(  # noqa: S603
-            [sys.executable, "agent/main.py", "--dry-run"],
+            [sys.executable, str(Path(__file__).parent.parent / "agent" / "main.py"), "--dry-run"],
             capture_output=True,
             text=True,
             cwd=str(Path(__file__).parent.parent),

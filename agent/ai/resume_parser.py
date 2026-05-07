@@ -68,7 +68,7 @@ class ResumeParser:
     @staticmethod
     def _md5(path: Path) -> str:
         """Return the MD5 hex digest of *path*."""
-        return hashlib.md5(path.read_bytes()).hexdigest()  # noqa: S324
+        return hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest()
 
     @staticmethod
     def _extract_text(path: Path) -> str:

@@ -49,7 +49,7 @@ class BaseScraper(ABC):
     @staticmethod
     def make_id(url: str) -> str:
         """Return a short stable ID derived from the job URL."""
-        return hashlib.md5(url.encode()).hexdigest()[:16]  # noqa: S324
+        return hashlib.md5(url.encode(), usedforsecurity=False).hexdigest()[:16]
 
     @staticmethod
     def now_iso() -> str:
