@@ -38,8 +38,14 @@ sys.path.insert(0, str(ROOT))
 
 _CDP_PORT = 9222
 
-# Best available free-tier Gemini model (no billing required)
-_GEMINI_MODEL = "gemini-1.5-flash-8b"
+# Preferred Gemini models in priority order (first available one is used).
+# The SDK will try each in turn and pick the first that works for your account.
+_GEMINI_MODEL_PRIORITY = [
+    "gemini-2.0-flash-lite",   # newest lightweight free model
+    "gemini-2.0-flash",        # slightly heavier but widely available
+    "gemini-1.5-flash",        # older stable free model
+    "gemini-1.5-flash-8b",     # smallest 1.5 variant
+]
 
 # Standard Chrome executable locations per OS
 _CHROME_PATHS = [
@@ -109,6 +115,25 @@ def _launch_chrome_with_cdp(chrome_exe: str) -> subprocess.Popen:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _pick_gemini_model(client) -> tuple[str, str] | tuple[None, None]:
+    """Try each model in priority order and return the first that responds.
+
+    Args:
+        client: An authenticated ``google.genai.Client`` instance.
+
+    Returns:
+        ``(model_name, response_text)`` for the first working model,
+        or ``(None, None)`` if none succeed.
+    """
+    for model in _GEMINI_MODEL_PRIORITY:
+        try:
+            resp = client.models.generate_content(model=model, contents="Say 'ok'")
+            return model, resp.text.strip()
+        except Exception:  # noqa: BLE001
+            continue
+    return None, None
 
 
 async def login_platform(platform: str, login_url: str) -> None:
@@ -219,21 +244,27 @@ def validate_config() -> None:
     else:
         console.print("  [yellow]⚠️  No platforms enabled in platforms.yaml[/yellow]")
 
-    # Gemini connectivity
+    # Gemini connectivity — auto-discover the best working model
     gemini_key = os.getenv("GEMINI_API_KEY")
     if gemini_key and gemini_key != "your_gemini_api_key_here":
         try:
             from google import genai  # type: ignore[import]
 
             client = genai.Client(api_key=gemini_key)
-            resp = client.models.generate_content(
-                model=_GEMINI_MODEL,
-                contents="Say 'ok'",
-            )
-            console.print(
-                f"  [green]✅ Gemini API connected[/green] "
-                f"[dim](model: {_GEMINI_MODEL} · response: {resp.text.strip()[:20]})[/dim]"
-            )
+            model, response_text = _pick_gemini_model(client)
+            if model:
+                console.print(
+                    f"  [green]✅ Gemini API connected[/green] "
+                    f"[dim](model: {model} · response: {response_text[:20]})[/dim]"
+                )
+            else:
+                # List available models to help diagnose the issue
+                available = [m.name for m in client.models.list()]
+                console.print(
+                    "  [red]❌ No working Gemini model found for your account.[/red]\n"
+                    f"     Available models: {', '.join(available) or 'none'}"
+                )
+                all_ok = False
         except Exception as exc:  # noqa: BLE001
             console.print(f"  [red]❌ Gemini API error: {exc}[/red]")
             all_ok = False
