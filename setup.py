@@ -34,9 +34,34 @@ _PLATFORM_URLS = {
     "foundit": "https://www.foundit.in/login",
 }
 
+# Common Chrome installation paths per OS
+_CHROME_PATHS = [
+    # Windows
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+    # macOS
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    # Linux
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+]
+
+
+def _find_chrome() -> str | None:
+    """Return the path to the user's real Chrome/Chromium installation, or None."""
+    for path in _CHROME_PATHS:
+        if Path(path).exists():
+            return path
+    return None
+
 
 async def login_platform(platform: str) -> None:
     """Open a headed browser for manual login, then save the session.
+
+    Uses the user's real Chrome installation so Google OAuth is not blocked.
+    Falls back to Playwright's bundled Chromium if Chrome is not found.
 
     Args:
         platform: Platform name, e.g. "naukri".
@@ -50,17 +75,59 @@ async def login_platform(platform: str) -> None:
         console.print(f"  [yellow]Unknown platform: {platform}[/yellow]")
         return
 
+    chrome_path = _find_chrome()
+    if chrome_path:
+        console.print(f"  [dim]Using real Chrome at: {chrome_path}[/dim]")
+    else:
+        console.print(
+            "  [yellow]⚠️  Real Chrome not found — falling back to Playwright Chromium.[/yellow]\n"
+            "  [yellow]   If Google OAuth login is blocked, install Google Chrome and retry.[/yellow]"
+        )
+
     console.print(f"\n  Opening browser for [bold]{platform}[/bold]…")
     console.print(f"  URL: {url}")
-    console.print("  [dim]Log in manually, then press Enter here to save your session.[/dim]")
+    console.print("  [dim]Log in manually in the browser window, then come back here and press Enter.[/dim]")
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=False)
-        context = await browser.new_context()
+        launch_kwargs: dict = {
+            "headless": False,
+            # Slow down actions slightly so pages load before we interact
+            "slow_mo": 100,
+            # Pass args that make Chrome behave more like a real user session
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
+        }
+
+        if chrome_path:
+            # Use the real Chrome executable — Google won't block this
+            launch_kwargs["executable_path"] = chrome_path
+            browser = await pw.chromium.launch(**launch_kwargs)
+        else:
+            browser = await pw.chromium.launch(**launch_kwargs)
+
+        # Create a context that looks like a real user (not a bot)
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800},
+            locale="en-IN",
+        )
+
         page = await context.new_page()
+
+        # Hide the webdriver flag that sites use to detect automation
+        await page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
 
-        console.print("  Waiting for you to log in…  (Press Enter when done) ", end="")
+        console.print("\n  Waiting for you to log in…  (Press Enter when done) ", end="")
         input()
 
         session_mgr = SessionManager()
@@ -103,6 +170,16 @@ def validate_config() -> None:
         console.print(f"  [green]✅ config/resume.pdf found[/green]")
     else:
         console.print("  [yellow]⚠️  config/resume.pdf not found — add your resume before running[/yellow]")
+
+    # Check Chrome installation
+    chrome_path = _find_chrome()
+    if chrome_path:
+        console.print(f"  [green]✅ Chrome found at: {chrome_path}[/green]")
+    else:
+        console.print(
+            "  [yellow]⚠️  Google Chrome not found. Install it for reliable login on all platforms.[/yellow]\n"
+            "     Download: https://www.google.com/chrome/"
+        )
 
     # Test Gemini connectivity
     gemini_key = os.getenv("GEMINI_API_KEY")
