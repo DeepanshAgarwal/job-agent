@@ -8,10 +8,10 @@ Usage:
     python setup.py --init-sheets        # Create Google Sheets tabs and headers
 
 How login works (CDP approach):
-    The script tells you to open Chrome with a debug port, then Playwright connects
-    to that already-running Chrome instance.  Because it is your real Chrome — with
-    your Google account already signed in — OAuth works exactly as it does normally.
-    No automation banners, no "browser may not be secure" errors.
+    Chrome is launched automatically with a remote debugging port.  Playwright
+    then connects to that already-running Chrome instance and navigates to the
+    platform login page.  Because Chrome was not launched by Playwright, Google
+    OAuth works without any blocks or "browser may not be secure" warnings.
 """
 
 import argparse
@@ -34,11 +34,11 @@ sys.path.insert(0, str(ROOT))
 _PLATFORMS_REQUIRING_LOGIN = ["naukri", "instahyre", "hirist", "cutshort", "foundit"]
 
 _PLATFORM_URLS = {
-    "naukri":     "https://www.naukri.com/nlogin/login",
-    "instahyre":  "https://www.instahyre.com/candidate/login/",
-    "hirist":     "https://www.hirist.tech/login",
-    "cutshort":   "https://cutshort.io/login",
-    "foundit":    "https://www.foundit.in/login",
+    "naukri":    "https://www.naukri.com/nlogin/login",
+    "instahyre": "https://www.instahyre.com/candidate/login/",
+    "hirist":    "https://www.hirist.tech/login",
+    "cutshort":  "https://cutshort.io/login",
+    "foundit":   "https://www.foundit.in/login",
 }
 
 _CDP_PORT = 9222
@@ -69,8 +69,8 @@ def _find_chrome() -> str | None:
 def _launch_chrome_with_cdp(chrome_exe: str) -> None:
     """Launch Chrome with remote debugging enabled (non-blocking).
 
-    A separate temporary user-data-dir is used so Chrome does not conflict
-    with any already-running Chrome instance on the machine.
+    A dedicated profile directory is used so this Chrome instance never
+    conflicts with the user's normal Chrome.
 
     Args:
         chrome_exe: Full path to the Chrome executable.
@@ -92,8 +92,8 @@ def _launch_chrome_with_cdp(chrome_exe: str) -> None:
 
 
 async def login_platform(platform: str) -> None:
-    """Connect to the user's real Chrome via CDP, navigate to the platform login
-    page, wait for manual login, then save the session cookies to disk.
+    """Launch Chrome via CDP, navigate to the platform login page, wait for
+    manual login, then save the session cookies to disk.
 
     Because Playwright connects to an already-running Chrome (rather than
     launching its own), Google OAuth works without any blocks or warnings.
@@ -118,21 +118,13 @@ async def login_platform(platform: str) -> None:
         )
         return
 
-    # Launch Chrome with CDP automatically
     console.print(f"\n[bold]Logging in to {platform}[/bold]")
-    console.print("[dim]Starting Chrome with remote debugging…[/dim]")
+    console.print("[dim]Starting Chrome…[/dim]")
     _launch_chrome_with_cdp(chrome_exe)
 
-    # Give Chrome a moment to start
+    # Give Chrome time to start before connecting
     await asyncio.sleep(2)
 
-    console.print(
-        f"[dim]Chrome is open. Sign in to [bold]{platform}[/bold] using your Google account "
-        f"or email/password, then come back here.[/dim]"
-    )
-    input("\n  Press Enter once you are fully logged in… ")
-
-    # Connect to the running Chrome via CDP and grab the session
     async with async_playwright() as pw:
         try:
             browser = await pw.chromium.connect_over_cdp(f"http://localhost:{_CDP_PORT}")
@@ -143,12 +135,15 @@ async def login_platform(platform: str) -> None:
             )
             return
 
-        # Use the first (default) browser context
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
-
-        # Navigate to the platform to make sure we capture its cookies
         page = context.pages[0] if context.pages else await context.new_page()
+
+        # Navigate to the login page so the user can log in straight away
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        console.print(f"[dim]Opened {url}[/dim]")
+        console.print("Log in using your Google account or email/password.")
+
+        input("\n  Press Enter once you are fully logged in… ")
 
         session_mgr = SessionManager()
         await session_mgr.save_session(platform, context)
@@ -251,8 +246,8 @@ def main() -> None:
         metavar="PLATFORM",
         help=f"Log in to a platform. Use 'all' or one of: {', '.join(_PLATFORMS_REQUIRING_LOGIN)}",
     )
-    parser.add_argument("--validate",     action="store_true", help="Check all API keys and configs")
-    parser.add_argument("--init-sheets",  action="store_true", help="Create Google Sheets tabs and headers")
+    parser.add_argument("--validate",    action="store_true", help="Check all API keys and configs")
+    parser.add_argument("--init-sheets", action="store_true", help="Create Google Sheets tabs and headers")
     args = parser.parse_args()
 
     console.print(Panel.fit("[bold cyan]🔧 Job Agent Setup Wizard[/bold cyan]", border_style="cyan"))
