@@ -38,14 +38,67 @@ from agent.scraper.cutshort import CutshortScraper
 from agent.scraper.foundit import FounditScraper
 from agent.scraper.hirist import HiristScraper
 from agent.scraper.instahyre import InstaHyreScraper
+from agent.scraper.internshala import InternshalasScraper
 from agent.scraper.jobspy_scraper import JobSpyScraper
 from agent.scraper.naukri import NaukriScraper
+from agent.scraper.unstop import UnstopScraper
 from agent.submitter.form_filler import FormFiller
 from agent.tracker.database import Database
 from agent.tracker.sheets import SheetsTracker
 
 console = Console()
 load_dotenv()
+
+# Suppress noisy 3rd-party model-loading warnings ────────────────────────────
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+
+import logging as _stdlib_log  # noqa: E402  (after env vars)
+
+# Route ALL stdlib logging through Loguru so formats/colours are consistent ──
+_MUTE_PATTERNS = (
+    "AFC is enabled",          # google-genai SDK automatic function calling noise
+)
+
+class _InterceptHandler(_stdlib_log.Handler):
+    def emit(self, record: _stdlib_log.LogRecord) -> None:
+        msg = record.getMessage()
+        if any(pat in msg for pat in _MUTE_PATTERNS):
+            return
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno  # type: ignore[assignment]
+        frame, depth = _stdlib_log.currentframe(), 2
+        while frame and frame.f_code.co_filename == _stdlib_log.__file__:
+            frame = frame.f_back  # type: ignore[assignment]
+            depth += 1
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+_stdlib_log.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
+
+# Silence noisy 3rd-party libraries (they now flow through Loguru) ────────────
+for _lib in (
+    "transformers", "huggingface_hub", "sentence_transformers",
+    "urllib3", "urllib3.connectionpool",   # jobspy HTTP connection spam
+    "httpcore", "httpx",                   # any httpx-based scrapers
+    "charset_normalizer",
+):
+    _stdlib_log.getLogger(_lib).setLevel(_stdlib_log.ERROR)
+
+# JobSpy attaches its own StreamHandler to named loggers, bypassing our
+# InterceptHandler.  Clear those handlers so messages propagate to root
+# (where InterceptHandler lives) and use the unified Loguru format.
+for _lib in ("JobSpy", "JobSpy:Linkedin", "JobSpy:Indeed"):
+    _log = _stdlib_log.getLogger(_lib)
+    _log.handlers.clear()
+    _log.propagate = True
+
+# Silence Google genai SDK internal chatter ("AFC is enabled..." etc.)
+for _lib in ("google", "google.ai", "google.ai.generativelanguage",
+             "google.generativeai", "google.auth"):
+    _stdlib_log.getLogger(_lib).setLevel(_stdlib_log.WARNING)
 
 # ── Config paths ─────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
@@ -88,6 +141,10 @@ def build_scraper_list(platforms: dict) -> list:
         scrapers.append(CutshortScraper())
     if scrape_cfg.get("foundit", {}).get("enabled"):
         scrapers.append(FounditScraper())
+    if scrape_cfg.get("internshala", {}).get("enabled"):
+        scrapers.append(InternshalasScraper())
+    if scrape_cfg.get("unstop", {}).get("enabled"):
+        scrapers.append(UnstopScraper())
     if scrape_cfg.get("linkedin", {}).get("enabled") or scrape_cfg.get("indeed", {}).get("enabled"):
         scrapers.append(JobSpyScraper())
     return scrapers
@@ -112,7 +169,21 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     parser = ResumeParser()
     resume_path = profile.get("resume", {}).get("path", "config/resume.pdf")
     resume_dict = parser.parse(resume_path)
-    resume_text = resume_dict.get("raw_text", "")
+
+    # Build a dense, noise-free text for embedding scoring.
+    # Raw PDF text wastes token budget on contact info, whitespace, and
+    # layout artefacts. Structured fields give the model pure signal.
+    _exp_bullets = " ".join(
+        desc
+        for exp in (resume_dict.get("experience") or [])
+        for desc in (exp.get("description") or [])
+    )
+    resume_text = " ".join(filter(None, [
+        resume_dict.get("summary", ""),
+        " ".join(resume_dict.get("skills") or []),
+        _exp_bullets,
+    ])) or resume_dict.get("raw_text", "")
+
     console.print(f"  ✅ Resume parsed — {resume_dict.get('total_years', '?')} years of experience detected")
 
     # ── Step 2: Scrape jobs ──────────────────────────────────────────────────
@@ -120,18 +191,22 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     scrapers = build_scraper_list(platforms)
     all_jobs: list[dict] = []
 
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
-        for scraper in scrapers:
-            task = progress.add_task(f"Scraping {scraper.__class__.__name__}…", total=None)
-            try:
-                jobs = await scraper.scrape(preferences)
-                new_jobs = [j for j in jobs if not db.is_seen(j["url"])]
-                all_jobs.extend(new_jobs)
-                progress.update(task, description=f"✅ {scraper.__class__.__name__} — {len(new_jobs)} new jobs")
-            except Exception as exc:  # noqa: BLE001
-                logger.error(f"Scraper {scraper.__class__.__name__} failed: {exc}")
-                progress.update(task, description=f"❌ {scraper.__class__.__name__} — failed")
-            progress.stop_task(task)
+    async def _run_scraper(scraper) -> tuple[str, list[dict]]:
+        name = scraper.__class__.__name__
+        try:
+            jobs = await scraper.scrape(preferences)
+            return name, jobs
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Scraper {name} failed: {exc}")
+            return name, []
+
+    console.print(f"  Running {len(scrapers)} scraper(s) in parallel…")
+    results = await asyncio.gather(*[_run_scraper(s) for s in scrapers])
+    for name, jobs in results:
+        db.upsert_scraped_jobs(jobs)  # record everything scraped, new or not
+        new_jobs = [j for j in jobs if not db.is_seen(j["url"])]
+        all_jobs.extend(new_jobs)
+        console.print(f"  ✅ {name} — {len(new_jobs)} new jobs")
 
     console.print(f"\n  📋 Total new jobs found: [bold]{len(all_jobs)}[/bold]")
     notifier.notify_scrape_complete(len(all_jobs))
@@ -148,34 +223,99 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
 
     # ── Step 3: Embedding score ──────────────────────────────────────────────
     console.rule("[bold green]Step 3 — AI Embedding Scoring[/bold green]")
+
+    if len(resume_text.strip()) < 200:
+        console.print(
+            f"  [bold red]⚠ Resume text is very short ({len(resume_text.strip())} chars).[/bold red]\n"
+            "  [yellow]All jobs will score near 0. Check that config/resume.pdf exists and is text-based (not a scanned image).[/yellow]"
+        )
+
     matcher = Matcher()
     with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
         task = progress.add_task("Scoring jobs with sentence-transformers…", total=None)
         all_jobs = matcher.batch_score(resume_text, all_jobs)
         progress.update(task, description=f"✅ Scored {len(all_jobs)} jobs")
 
+    for job in all_jobs:
+        db.update_job_score(job["url"], job.get("match_score", 0.0))
+
     # ── Step 4: Gemini analysis ──────────────────────────────────────────────
     console.rule("[bold green]Step 4 — Gemini Fit Analysis[/bold green]")
+
+    # Build a keyword set from skills + role keywords for pre-filtering.
+    # Jobs with zero overlap are genuinely irrelevant and skip Gemini entirely.
+    _skill_keywords = {s.lower() for s in resume_dict.get("skills", [])}
+    _role_keywords = {
+        word.lower()
+        for role in preferences.get("roles", [])
+        for word in role.split()
+        if len(word) > 3
+    }
+    _filter_keywords = _skill_keywords | _role_keywords
+
+    def _has_keyword_match(job: dict) -> bool:
+        text = (job.get("description", "") + " " + job.get("title", "")).lower()
+        return any(kw in text for kw in _filter_keywords)
+
+    # Split into keyword-matched (→ Gemini) vs irrelevant (→ low_score)
+    keyword_matched = [j for j in all_jobs if _has_keyword_match(j)]
+    keyword_rejected = [j for j in all_jobs if not _has_keyword_match(j)]
+
+    for job in keyword_rejected:
+        db.mark_seen(job)
+        db.update_job_outcome(job["url"], "low_score")
+
+    # Sort matched jobs by embedding score descending, then cap at max_gemini_calls.
+    # Jobs beyond the cap are marked low_score — they'll re-surface next run if
+    # better-scoring jobs have been exhausted.
+    max_gemini = preferences.get("max_gemini_calls", 75)
+    keyword_matched.sort(key=lambda j: j.get("match_score", 0.0), reverse=True)
+    gemini_batch = keyword_matched[:max_gemini]
+    gemini_overflow = keyword_matched[max_gemini:]
+
+    for job in gemini_overflow:
+        db.update_job_outcome(job["url"], "low_score")
+
+    console.print(
+        f"  📊 Keyword filter: [bold]{len(keyword_matched)}[/bold] matched, "
+        f"[bold]{len(gemini_batch)}[/bold] sent to Gemini "
+        f"([dim]{len(keyword_rejected)} irrelevant, {len(gemini_overflow)} deferred[/dim])"
+    )
+
     analyzer = Analyzer()
     shortlisted: list[dict] = []
-    for job in all_jobs:
-        if job.get("match_score", 0) < preferences.get("min_match_score", 65):
-            db.mark_seen(job)
-            notifier.notify_skipped(job, f"Low embedding score: {job.get('match_score', 0):.1f}")
-            continue
+    skipped_low_score = len(keyword_rejected) + len(gemini_overflow)
+    skipped_ai = 0
+    for job in gemini_batch:
         try:
             analysis = analyzer.analyze(resume_dict, job, preferences)
             job.update(analysis)
+            gemini_score = analysis.get("match_score")
+            gemini_reasons = analysis.get("match_reasons") or []
             if analysis.get("should_apply"):
+                notes = "; ".join(gemini_reasons)
+                db.update_job_outcome(
+                    job["url"], "shortlisted", notes,
+                    gemini_score=gemini_score, gemini_reasons=gemini_reasons,
+                )
                 shortlisted.append(job)
             else:
                 db.mark_seen(job)
-                notifier.notify_skipped(job, analysis.get("skip_reason", "AI skip"))
+                notes = analysis.get("skip_reason") or "; ".join(gemini_reasons)
+                db.update_job_outcome(
+                    job["url"], "ai_rejected", notes,
+                    gemini_score=gemini_score, gemini_reasons=gemini_reasons,
+                )
+                skipped_ai += 1
         except Exception as exc:  # noqa: BLE001
             logger.error(f"Gemini analysis failed for {job.get('url')}: {exc}")
             db.mark_seen(job)
+            db.update_job_outcome(job["url"], "error", str(exc))
 
-    console.print(f"  🎯 Shortlisted: [bold]{len(shortlisted)}[/bold] / {len(all_jobs)} jobs")
+    console.print(
+        f"  🎯 Shortlisted: [bold]{len(shortlisted)}[/bold] / {len(all_jobs)} jobs  "
+        f"([dim]low-score skipped: {skipped_low_score}, AI skipped: {skipped_ai}[/dim])"
+    )
 
     if not shortlisted:
         console.print("  [yellow]No jobs passed AI screening. Exiting.[/yellow]")
@@ -206,6 +346,9 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     notifier.notify_preview(shortlisted)
 
     if args.dry_run:
+        # Mark shortlisted jobs as seen so they aren't re-evaluated every run
+        for job in shortlisted:
+            db.mark_seen(job)
         console.print("  [cyan]--dry-run mode: no applications submitted.[/cyan]")
         return
 

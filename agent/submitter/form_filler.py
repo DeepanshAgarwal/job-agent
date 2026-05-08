@@ -21,6 +21,8 @@ _PLATFORM_PATTERNS: list[tuple[str, str]] = [
     (r"lever\.co", "lever"),
     (r"naukri\.com", "naukri"),
     (r"instahyre\.com", "instahyre"),
+    (r"internshala\.com", "internshala"),
+    (r"unstop\.com", "unstop"),
 ]
 
 
@@ -109,5 +111,11 @@ class FormFiller:
         if platform == "instahyre":
             from agent.submitter.platforms.instahyre_apply import InstahyreApplyHandler
             return InstahyreApplyHandler()
+        if platform == "internshala":
+            from agent.submitter.platforms.internshala_apply import InternshalaApplyHandler
+            return InternshalaApplyHandler()
+        if platform == "unstop":
+            from agent.submitter.platforms.unstop_apply import UnstopApplyHandler
+            return UnstopApplyHandler()
         from agent.submitter.platforms.generic import GenericHandler
         return GenericHandler()

@@ -5,9 +5,11 @@ Logs in using a saved browser session, searches for jobs by role and
 location, extracts job cards across up to 3 pages of results, and
 returns a list of canonical job dicts.
 
-TODO: Verify CSS selectors against live Naukri.com before first run.
+Naukri is a Next.js SSR app — content is available at domcontentloaded.
+Job links follow the pattern /job-listings-{slug}.
 """
 
+import re
 from typing import Any
 
 from loguru import logger
@@ -15,18 +17,16 @@ from loguru import logger
 from agent.scraper.base_scraper import BaseScraper
 from agent.submitter.session_manager import SessionManager
 
-# TODO: Verify these selectors on live Naukri.com
-_SELECTORS = {
-    "job_card": "article.jobTuple",
-    "title": "a.title",
-    "company": "a.subTitle",
-    "location": "li.fleft.br2.bl",
-    "posted": "span.fw500",
-    "next_page": "a.fright.fs14.btn-secondary.next-btn",
-}
-
 _BASE_URL = "https://www.naukri.com"
-_SEARCH_URL = "https://www.naukri.com/{role}-jobs-in-{location}"
+# Known card container selectors in order of likelihood
+_CARD_SELECTORS = [
+    "div.cust-job-tuple",
+    "article.jobTuple",
+    "div[class*='jobTuple']",
+    "div[class*='job-tuple']",
+]
+# Naukri job detail links always contain /job-listings-
+_JOB_LINK_RE = re.compile(r"/job-listings-")
 
 
 class NaukriScraper(BaseScraper):
@@ -50,7 +50,7 @@ class NaukriScraper(BaseScraper):
         try:
             from playwright.async_api import async_playwright  # noqa: PLC0415
         except ImportError:
-            logger.warning("playwright not installed — skipping Naukri scraping.")
+            logger.warning("NaukriScraper: playwright not installed — skipping.")
             return jobs
 
         async with async_playwright() as pw:
@@ -85,46 +85,92 @@ class NaukriScraper(BaseScraper):
     async def _scrape_search(
         self, context: Any, role: str, location: str, hours_old: int
     ) -> list[dict[str, Any]]:
-        """Navigate to search results and extract jobs across pages."""
+        """Navigate to search results and extract jobs.
+
+        Uses query_selector_all (non-waiting element handles) to avoid
+        Playwright locator timeouts. Falls back to link harvesting if
+        no known card selector matches.
+        """
         page = await context.new_page()
         role_slug = role.lower().replace(" ", "-")
-        location_slug = location.lower().replace(" ", "-")
-        url = _SEARCH_URL.format(role=role_slug, location=location_slug)
+
+        if location.lower() == "remote":
+            url = f"{_BASE_URL}/{role_slug}-jobs?workfromhome=1"
+        else:
+            location_slug = location.lower().replace(" ", "-")
+            url = f"{_BASE_URL}/{role_slug}-jobs-in-{location_slug}"
 
         jobs: list[dict[str, Any]] = []
 
-        for page_num in range(1, 4):  # max 3 pages
-            if page_num == 1:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            else:
-                next_btn = page.locator(_SELECTORS["next_page"])
-                if not await next_btn.is_visible():
-                    break
-                await next_btn.click()
-                await page.wait_for_load_state("domcontentloaded", timeout=15_000)
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"NaukriScraper: goto failed for '{role}'/'{location}': {exc}")
+            await page.close()
+            return jobs
 
-            cards = page.locator(_SELECTORS["job_card"])
-            count = await cards.count()
-            for i in range(count):
+        # --- Primary: try known card container selectors ---
+        cards = []
+        for sel in _CARD_SELECTORS:
+            cards = await page.query_selector_all(sel)
+            if cards:
+                break
+
+        if cards:
+            for card in cards:
                 try:
-                    card = cards.nth(i)
-                    title = await card.locator(_SELECTORS["title"]).inner_text()
-                    company = await card.locator(_SELECTORS["company"]).first.inner_text()
-                    loc_text = await card.locator(_SELECTORS["location"]).first.inner_text()
-                    # TODO: parse posted date and filter by hours_old
-                    href = await card.locator(_SELECTORS["title"]).get_attribute("href")
-                    job_url = href if href and href.startswith("http") else _BASE_URL + (href or "")
+                    link_el = await card.query_selector("a[href*='/job-listings-']")
+                    if link_el is None:
+                        continue
+                    title = (await link_el.inner_text()).strip()
+                    href = await link_el.get_attribute("href") or ""
+                    job_url = href if href.startswith("http") else _BASE_URL + href
+
+                    company_el = await card.query_selector(
+                        "a.subTitle, a[href*='/jobs-careers-'], .comp-name"
+                    )
+                    company = (await company_el.inner_text()).strip() if company_el else "Unknown"
+
+                    loc_el = await card.query_selector(
+                        "li.fleft, span.locWdth, .loc, [class*='location']"
+                    )
+                    location_text = (await loc_el.inner_text()).strip() if loc_el else location
+
                     jobs.append(
                         self.build_job(
-                            title=title.strip(),
-                            company=company.strip(),
+                            title=title,
+                            company=company,
                             url=job_url,
                             source="naukri",
-                            location=loc_text.strip(),
+                            location=location_text,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug(f"Naukri card parse error: {exc}")
+                    logger.debug(f"NaukriScraper: card parse error: {exc}")
+
+        # --- Fallback: harvest job links directly ---
+        if not jobs:
+            links = await page.query_selector_all("a[href*='/job-listings-']")
+            for link in links:
+                try:
+                    href = await link.get_attribute("href") or ""
+                    if not _JOB_LINK_RE.search(href):
+                        continue
+                    job_url = href if href.startswith("http") else _BASE_URL + href
+                    title = (await link.inner_text()).strip()
+                    if not title:
+                        continue
+                    jobs.append(
+                        self.build_job(
+                            title=title,
+                            company="Unknown",
+                            url=job_url,
+                            source="naukri",
+                            location=location,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(f"NaukriScraper: link parse error: {exc}")
 
         await page.close()
         return jobs

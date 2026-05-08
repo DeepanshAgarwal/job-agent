@@ -48,7 +48,7 @@ class FounditScraper(BaseScraper):
         try:
             from playwright.async_api import async_playwright  # noqa: PLC0415
         except ImportError:
-            logger.warning("playwright not installed — skipping Foundit scraping.")
+            logger.warning("FounditScraper: playwright not installed — skipping.")
             return jobs
 
         async with async_playwright() as pw:
@@ -101,7 +101,7 @@ class FounditScraper(BaseScraper):
                         )
                     )
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug(f"Foundit card parse error: {exc}")
+                    logger.debug(f"FounditScraper: card parse error: {exc}")
 
             next_btn = page.locator(_SELECTORS["next_page"])
             if not await next_btn.is_visible():

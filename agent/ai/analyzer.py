@@ -11,9 +11,13 @@ asks Gemini Flash to make a structured JSON decision:
 
 import json
 import os
+import re
+import time
 from typing import Any
 
 from loguru import logger
+
+from agent.ai._gemini import get_client_and_model
 
 
 class Analyzer:
@@ -22,11 +26,11 @@ class Analyzer:
     _PROMPT_TEMPLATE = """
 You are an expert job application assistant helping a candidate decide whether to apply.
 
-## Candidate Summary
-{summary}
-
-## Candidate Skills
-{skills}
+## Candidate Profile
+Summary: {summary}
+Skills: {skills}
+Experience: {experience}
+Seniority: {total_years} year(s) of experience — target levels: {seniority_levels}
 
 ## Candidate Preferences
 - Target roles: {roles}
@@ -38,6 +42,7 @@ You are an expert job application assistant helping a candidate decide whether t
 Title: {title}
 Company: {company}
 Location: {location}
+Salary/CTC: {job_salary}
 Description:
 {description}
 
@@ -50,26 +55,20 @@ Analyse the fit and return ONLY valid JSON (no markdown) with:
   "skip_reason": null or "reason string"
 }}
 
-Be strict: skip if company is blacklisted, required skills are missing,
-or salary is likely below the minimum.
+Rules:
+- SKIP if any blacklisted keyword appears in the title or description.
+- SKIP if the role clearly requires a seniority level far above the candidate (e.g. 5+ years when candidate has <1 year). Entry/junior/associate roles are fine.
+- SKIP only if the candidate is missing the CORE technology stack of the role — not every listed skill. Minor gaps (e.g. one library out of many) are fine; transferable/equivalent skills count.
+- SKIP if the Salary/CTC field is non-empty and the value is below the candidate minimum ({min_lpa} LPA / ${min_usd} USD/year). Also skip if the salary is mentioned in the description and is clearly below the minimum. If salary is unknown/not mentioned, do NOT skip on salary grounds.
+- When in doubt, APPLY — a borderline match is better than a missed opportunity.
+- Set match_score based on overall stack alignment, seniority fit, and role relevance (0-100).
 """
 
     def __init__(self) -> None:
-        """Initialise the Gemini model (lazy import)."""
-        self._model = None
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            logger.warning("GEMINI_API_KEY not set — Analyzer will approve all jobs.")
-            return
-        try:
-            import google.generativeai as genai  # type: ignore[import]
-
-            genai.configure(api_key=api_key)
-            self._model = genai.GenerativeModel("gemini-1.5-flash")
-        except ImportError:
-            logger.warning("google-generativeai not installed — Analyzer will approve all jobs.")
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"Analyzer init failed: {exc}")
+        """Initialise the Gemini client."""
+        self._client, self._model_name = get_client_and_model()
+        if self._client is None:
+            logger.warning("Gemini unavailable — Analyzer will approve all jobs.")
 
     def analyze(self, resume_dict: dict[str, Any], job: dict[str, Any], preferences: dict) -> dict[str, Any]:
         """Return a decision dict for the given job.
@@ -90,40 +89,72 @@ or salary is likely below the minimum.
             "skip_reason": None,
         }
 
-        if self._model is None:
+        if self._client is None:
             return default
 
         prompt = self._PROMPT_TEMPLATE.format(
             summary=resume_dict.get("summary", ""),
-            skills=", ".join(resume_dict.get("skills", [])),
-            roles=", ".join(preferences.get("roles", [])),
+            skills=", ".join(resume_dict.get("skills") or []),
+            experience="; ".join(
+                f"{e.get('title', '')} at {e.get('company', '')} ({e.get('duration', '')})"
+                for e in (resume_dict.get("experience") or [])
+            ) or "Not specified",
+            total_years=resume_dict.get("total_years", 0),
+            seniority_levels=", ".join(preferences.get("seniority_levels") or ["entry", "junior"]),
+            roles=", ".join(preferences.get("roles") or []),
             min_lpa=preferences.get("salary", {}).get("min_lpa", 0),
             min_usd=preferences.get("salary", {}).get("min_usd_yearly", 0),
-            blacklist=", ".join(preferences.get("keywords_blacklist", [])),
-            must_have=", ".join(preferences.get("keywords_must_have", [])),
+            blacklist=", ".join(preferences.get("keywords_blacklist") or []),
+            must_have=", ".join(preferences.get("keywords_must_have") or []),
             title=job.get("title", ""),
             company=job.get("company", ""),
             location=job.get("location", ""),
+            job_salary=job.get("salary") or "Not specified",
             description=job.get("description", "")[:3000],
         )
 
-        try:
-            response = self._model.generate_content(prompt)
-            text = response.text.strip()
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-            result = json.loads(text)
-            # Ensure required keys are present
-            result.setdefault("should_apply", True)
-            result.setdefault("match_score", default["match_score"])
-            result.setdefault("match_reasons", [])
-            result.setdefault("skip_reason", None)
-            return result
-        except json.JSONDecodeError as exc:
-            logger.error(f"Analyzer: Gemini returned invalid JSON: {exc}")
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"Analyzer.analyze failed: {exc}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self._client.models.generate_content(
+                    model=self._model_name,
+                    contents=prompt,
+                )
+                text = response.text.strip()
+                if text.startswith("```"):
+                    text = text.split("```")[1]
+                    if text.startswith("json"):
+                        text = text[4:]
+                result = json.loads(text)
+                result.setdefault("should_apply", True)
+                result.setdefault("match_score", default["match_score"])
+                result.setdefault("match_reasons", [])
+                result.setdefault("skip_reason", None)
+                return result
+            except json.JSONDecodeError as exc:
+                logger.error(f"Analyzer: Gemini returned invalid JSON: {exc}")
+                break  # malformed response — no point retrying
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                    match = re.search(r"retry[^\d]*(\d+)", msg, re.IGNORECASE)
+                    wait = int(match.group(1)) + 2 if match else 60
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Analyzer: rate-limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(wait)
+                        continue
+                    else:
+                        logger.error(f"Analyzer: rate-limit exhausted after {max_retries} attempts — skipping job")
+                elif "503" in msg or "UNAVAILABLE" in msg:
+                    wait = 15 * (attempt + 1)  # 15s, 30s, 45s
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Analyzer: Gemini unavailable (503), retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(wait)
+                        continue
+                    else:
+                        logger.error("Analyzer: Gemini unavailable after retries — skipping job")
+                else:
+                    logger.error(f"Analyzer.analyze failed: {exc}")
+                break
 
         return default

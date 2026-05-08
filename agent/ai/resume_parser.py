@@ -16,6 +16,8 @@ from typing import Any
 
 from loguru import logger
 
+from agent.ai._gemini import get_client_and_model
+
 
 class ResumeParser:
     """Parse a PDF resume into a structured dict using PyMuPDF + Gemini."""
@@ -56,10 +58,13 @@ class ResumeParser:
         structured["raw_text"] = raw_text
         structured["_hash"] = pdf_hash
 
-        try:
-            cache_path.write_text(json.dumps(structured, indent=2))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(f"Failed to write resume cache: {exc}")
+        # Only cache if Gemini actually produced useful output — don't cache
+        # empty fallback results so the next run retries Gemini.
+        if structured.get("summary") or structured.get("skills"):
+            try:
+                cache_path.write_text(json.dumps(structured, indent=2))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Failed to write resume cache: {exc}")
 
         return structured
 
@@ -89,9 +94,8 @@ class ResumeParser:
 
     @staticmethod
     def _parse_with_gemini(raw_text: str) -> dict[str, Any]:
-        """Use Gemini Flash to parse raw resume text into a structured dict."""
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key or not raw_text.strip():
+        """Use Gemini to parse raw resume text into a structured dict."""
+        if not raw_text.strip():
             return {"summary": "", "skills": [], "experience": [], "education": [], "total_years": 0}
 
         prompt = f"""
@@ -109,11 +113,13 @@ Resume:
 Return only the JSON object, no markdown, no explanation.
 """
         try:
-            import google.generativeai as genai  # type: ignore[import]
-
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content(prompt)
+            client, model_name = get_client_and_model()
+            if client is None or model_name is None:
+                return {"summary": "", "skills": [], "experience": [], "education": [], "total_years": 0}
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
             text = response.text.strip()
             # Strip markdown code fences if present
             if text.startswith("```"):
@@ -122,7 +128,7 @@ Return only the JSON object, no markdown, no explanation.
                     text = text[4:]
             return json.loads(text)
         except ImportError:
-            logger.warning("google-generativeai not installed — skipping Gemini resume parse.")
+            logger.warning("google-genai not installed — skipping Gemini resume parse.")
         except json.JSONDecodeError as exc:
             logger.error(f"Gemini returned invalid JSON: {exc}")
         except Exception as exc:  # noqa: BLE001

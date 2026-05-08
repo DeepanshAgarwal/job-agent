@@ -66,6 +66,8 @@ class BaseScraper(ABC):
         location: str = "",
         description: str = "",
         posted_at: str = "",
+        salary: str = "",
+        experience_required: str = "",
     ) -> dict[str, Any]:
         """Build a canonical job dict with an auto-generated ID."""
         return {
@@ -77,4 +79,6 @@ class BaseScraper(ABC):
             "description": description,
             "posted_at": posted_at or BaseScraper.now_iso(),
             "source": source,
+            "salary": salary,
+            "experience_required": experience_required,
         }

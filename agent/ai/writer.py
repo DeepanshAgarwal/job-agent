@@ -10,6 +10,8 @@ from typing import Any
 
 from loguru import logger
 
+from agent.ai._gemini import get_client_and_model
+
 
 class Writer:
     """Generate cover letters and custom question answers with Gemini."""
@@ -53,21 +55,10 @@ Return only the answer text, no preamble.
 """
 
     def __init__(self) -> None:
-        """Initialise the Gemini model."""
-        self._model = None
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            logger.warning("GEMINI_API_KEY not set — Writer will use placeholder text.")
-            return
-        try:
-            import google.generativeai as genai  # type: ignore[import]
-
-            genai.configure(api_key=api_key)
-            self._model = genai.GenerativeModel("gemini-1.5-flash")
-        except ImportError:
-            logger.warning("google-generativeai not installed — Writer degraded.")
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"Writer init failed: {exc}")
+        """Initialise the Gemini client."""
+        self._client, self._model_name = get_client_and_model()
+        if self._client is None:
+            logger.warning("Gemini unavailable — Writer will use placeholder text.")
 
     def generate_cover_letter(self, resume_dict: dict[str, Any], job: dict[str, Any]) -> str:
         """Generate a tailored cover letter for *job*.
@@ -80,7 +71,7 @@ Return only the answer text, no preamble.
             Cover letter as a plain string.  Falls back to a generic
             placeholder if Gemini is unavailable.
         """
-        if self._model is None:
+        if self._client is None:
             return self._fallback_cover_letter(resume_dict, job)
 
         prompt = self._COVER_LETTER_PROMPT.format(
@@ -93,7 +84,10 @@ Return only the answer text, no preamble.
         )
 
         try:
-            response = self._model.generate_content(prompt)
+            response = self._client.models.generate_content(
+                model=self._model_name,
+                contents=prompt,
+            )
             return response.text.strip()
         except Exception as exc:  # noqa: BLE001
             logger.error(f"Writer.generate_cover_letter failed: {exc}")
@@ -110,7 +104,7 @@ Return only the answer text, no preamble.
         Returns:
             Answer as a plain string.
         """
-        if self._model is None:
+        if self._client is None:
             return "I am excited about this opportunity and believe my experience aligns well with the role."
 
         personal = profile.get("personal", {})
@@ -132,7 +126,10 @@ Return only the answer text, no preamble.
         )
 
         try:
-            response = self._model.generate_content(prompt)
+            response = self._client.models.generate_content(
+                model=self._model_name,
+                contents=prompt,
+            )
             return response.text.strip()
         except Exception as exc:  # noqa: BLE001
             logger.error(f"Writer.answer_custom_question failed: {exc}")

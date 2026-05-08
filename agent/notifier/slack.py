@@ -9,6 +9,7 @@ interrupted by a missing Slack configuration.
 
 import json
 import os
+import time
 from datetime import datetime
 from typing import Any
 
@@ -21,9 +22,12 @@ from loguru import logger
 class SlackNotifier:
     """Send structured Slack notifications via Incoming Webhook."""
 
+    _RATE_LIMIT_BACKOFF = 60  # seconds to pause after a 429
+
     def __init__(self) -> None:
         """Read the webhook URL from the environment."""
         self._webhook_url = os.getenv("SLACK_WEBHOOK_URL", "")
+        self._rate_limited_until: float = 0.0
         if not self._webhook_url:
             logger.info("SLACK_WEBHOOK_URL not set — Slack notifications disabled.")
 
@@ -123,12 +127,15 @@ class SlackNotifier:
         """POST *payload* as JSON to the Slack webhook URL.
 
         Silently ignores errors so a Slack outage never crashes the pipeline.
+        Backs off for 60 seconds after a 429 Too Many Requests response.
 
         Args:
             payload: Slack message payload dict.
         """
         if not self._webhook_url:
             return
+        if time.monotonic() < self._rate_limited_until:
+            return  # still in back-off window — silently drop
         try:
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
@@ -140,6 +147,14 @@ class SlackNotifier:
             with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
                 if resp.status not in (200, 201):
                     logger.warning(f"Slack webhook returned status {resp.status}")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                self._rate_limited_until = time.monotonic() + self._RATE_LIMIT_BACKOFF
+                logger.warning(
+                    f"Slack rate-limited (429) — pausing notifications for {self._RATE_LIMIT_BACKOFF}s"
+                )
+            else:
+                logger.warning(f"Slack notification failed (network): {exc}")
         except urllib.error.URLError as exc:
             logger.warning(f"Slack notification failed (network): {exc}")
         except Exception as exc:  # noqa: BLE001

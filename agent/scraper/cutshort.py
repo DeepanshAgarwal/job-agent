@@ -46,7 +46,7 @@ class CutshortScraper(BaseScraper):
         try:
             from playwright.async_api import async_playwright  # noqa: PLC0415
         except ImportError:
-            logger.warning("playwright not installed — skipping Cutshort scraping.")
+            logger.warning("CutshortScraper: playwright not installed — skipping.")
             return jobs
 
         async with async_playwright() as pw:
@@ -96,7 +96,7 @@ class CutshortScraper(BaseScraper):
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.debug(f"Cutshort card parse error: {exc}")
+                logger.debug(f"CutshortScraper: card parse error: {exc}")
 
         await page.close()
         return jobs

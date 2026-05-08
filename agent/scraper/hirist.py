@@ -44,7 +44,7 @@ class HiristScraper(BaseScraper):
         try:
             from playwright.async_api import async_playwright  # noqa: PLC0415
         except ImportError:
-            logger.warning("playwright not installed — skipping Hirist scraping.")
+            logger.warning("HiristScraper: playwright not installed — skipping.")
             return jobs
 
         async with async_playwright() as pw:
@@ -100,7 +100,7 @@ class HiristScraper(BaseScraper):
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.debug(f"Hirist card parse error: {exc}")
+                logger.debug(f"HiristScraper: card parse error: {exc}")
 
         await page.close()
         return jobs
