@@ -7,57 +7,57 @@
 # ─────────────────────────────────────────────────────────────
 
 scrape_from:
-  naukri:
-    enabled: true
-    login_required: true
-    login_url: https://www.naukri.com/nlogin/login
-  instahyre:
-    enabled: true
-    login_required: true
-    login_url: https://www.instahyre.com/candidate/login/
-  hirist:
-    enabled: true
-    login_required: true
-    login_url: https://www.hirist.tech/login
-  cutshort:
-    enabled: true
-    login_required: true
-    login_url: https://cutshort.io/login
-  foundit:
-    enabled: true
-    login_required: true
-    login_url: https://www.foundit.in/login
-  linkedin:
-    enabled: true
-    login_required: true
-    login_url: https://www.linkedin.com/login
-  internshala:
-    enabled: true
-    login_required: true
-    login_url: https://internshala.com/login
-  unstop:
-    enabled: true
-    login_required: true
-    login_url: https://unstop.com/login
-  indeed:
-    enabled: false
-    login_required: false
-    login_url: null
+    naukri:
+        enabled: true
+        login_required: true
+        login_url: https://www.naukri.com/nlogin/login
+    instahyre:
+        enabled: true
+        login_required: true
+        login_url: https://www.instahyre.com/candidate/login/
+    linkedin:
+        enabled: true
+        login_required: true
+        login_url: https://www.linkedin.com/login
+    internshala:
+        enabled: true
+        login_required: true
+        login_url: https://internshala.com/login
+    unstop:
+        enabled: true
+        login_required: true
+        login_url: https://unstop.com/login
+    hirist:
+        enabled: false
+        login_required: true
+        login_url: https://www.hirist.tech/login
+    cutshort:
+        enabled: false
+        login_required: true
+        login_url: https://cutshort.io/login
+    foundit:
+        enabled: false
+        login_required: true
+        login_url: https://www.foundit.in/login
+    indeed:
+        enabled: true
+        login_required: false
+        login_url: null
 
 apply_on:
-  greenhouse:
-    enabled: true
-  lever:
-    enabled: true
-  naukri:
-    enabled: true
-  instahyre:
-    enabled: true
-  internshala:
-    enabled: true
-  unstop:
-    enabled: true
-  linkedin_easy_apply:
-    enabled: true
-  generic:
-    enabled: true
+    greenhouse:
+        enabled: false
+    lever:
+        enabled: false
+    naukri:
+        enabled: true
+    instahyre:
+        enabled: true
+    internshala:
+        enabled: true
+    unstop:
+        enabled: true
+    linkedin_easy_apply:
+        enabled: true
+    generic:
+        enabled: true

@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 # Ensure the repo root is on PYTHONPATH when running from any directory
@@ -191,22 +191,42 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     scrapers = build_scraper_list(platforms)
     all_jobs: list[dict] = []
 
-    async def _run_scraper(scraper) -> tuple[str, list[dict]]:
-        name = scraper.__class__.__name__
-        try:
-            jobs = await scraper.scrape(preferences)
-            return name, jobs
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"Scraper {name} failed: {exc}")
-            return name, []
-
     console.print(f"  Running {len(scrapers)} scraper(s) in parallel…")
-    results = await asyncio.gather(*[_run_scraper(s) for s in scrapers])
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as _prog:
+        _stasks = {
+            s.__class__.__name__: _prog.add_task(
+                f"  [cyan]{s.__class__.__name__}[/cyan] — scraping…", total=None
+            )
+            for s in scrapers
+        }
+
+        async def _run_scraper(scraper) -> tuple[str, list[dict]]:
+            name = scraper.__class__.__name__
+            try:
+                jobs = await scraper.scrape(preferences)
+                _prog.update(
+                    _stasks[name],
+                    description=f"  [green]✓ {name}[/green] — {len(jobs)} scraped",
+                    total=1, completed=1,
+                )
+                return name, jobs
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"Scraper {name} failed: {exc}")
+                _prog.update(
+                    _stasks[name],
+                    description=f"  [red]✗ {name}[/red] — failed",
+                    total=1, completed=1,
+                )
+                return name, []
+
+        results = await asyncio.gather(*[_run_scraper(s) for s in scrapers])
+
     for name, jobs in results:
         db.upsert_scraped_jobs(jobs)  # record everything scraped, new or not
         new_jobs = [j for j in jobs if not db.is_seen(j["url"])]
         all_jobs.extend(new_jobs)
-        console.print(f"  ✅ {name} — {len(new_jobs)} new jobs")
+        if jobs:
+            console.print(f"    {name}: {len(new_jobs)} new / {len(jobs)} total")
 
     console.print(f"\n  📋 Total new jobs found: [bold]{len(all_jobs)}[/bold]")
     notifier.notify_scrape_complete(len(all_jobs))
@@ -286,31 +306,51 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     shortlisted: list[dict] = []
     skipped_low_score = len(keyword_rejected) + len(gemini_overflow)
     skipped_ai = 0
-    for job in gemini_batch:
-        try:
-            analysis = analyzer.analyze(resume_dict, job, preferences)
-            job.update(analysis)
-            gemini_score = analysis.get("match_score")
-            gemini_reasons = analysis.get("match_reasons") or []
-            if analysis.get("should_apply"):
-                notes = "; ".join(gemini_reasons)
-                db.update_job_outcome(
-                    job["url"], "shortlisted", notes,
-                    gemini_score=gemini_score, gemini_reasons=gemini_reasons,
-                )
-                shortlisted.append(job)
-            else:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=28),
+        MofNCompleteColumn(),
+        console=console,
+    ) as _prog:
+        _gtask = _prog.add_task("Waiting…", total=len(gemini_batch))
+        for job in gemini_batch:
+            _prog.update(
+                _gtask,
+                description=(
+                    f"[cyan]{job.get('company', '?')[:22]}[/cyan]"
+                    f"  {job.get('title', '')[:38]}"
+                ),
+            )
+            try:
+                analysis = analyzer.analyze(resume_dict, job, preferences)
+                # Preserve embedding match_score; store Gemini's assessment under its own key
+                job["gemini_score"] = analysis.get("match_score")
+                job["match_reasons"] = analysis.get("match_reasons") or []
+                job["skip_reason"] = analysis.get("skip_reason")
+                gemini_score = job["gemini_score"]
+                gemini_reasons = job["match_reasons"]
+                if analysis.get("should_apply"):
+                    notes = "; ".join(gemini_reasons)
+                    db.update_job_outcome(
+                        job["url"], "shortlisted", notes,
+                        gemini_score=gemini_score, gemini_reasons=gemini_reasons,
+                    )
+                    sheets.upsert_job(job, "shortlisted")
+                    shortlisted.append(job)
+                else:
+                    db.mark_seen(job)
+                    notes = analysis.get("skip_reason") or "; ".join(gemini_reasons)
+                    db.update_job_outcome(
+                        job["url"], "ai_rejected", notes,
+                        gemini_score=gemini_score, gemini_reasons=gemini_reasons,
+                    )
+                    skipped_ai += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"Gemini analysis failed for {job.get('url')}: {exc}")
                 db.mark_seen(job)
-                notes = analysis.get("skip_reason") or "; ".join(gemini_reasons)
-                db.update_job_outcome(
-                    job["url"], "ai_rejected", notes,
-                    gemini_score=gemini_score, gemini_reasons=gemini_reasons,
-                )
-                skipped_ai += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"Gemini analysis failed for {job.get('url')}: {exc}")
-            db.mark_seen(job)
-            db.update_job_outcome(job["url"], "error", str(exc))
+                db.update_job_outcome(job["url"], "error", str(exc))
+            _prog.advance(_gtask)
 
     console.print(
         f"  🎯 Shortlisted: [bold]{len(shortlisted)}[/bold] / {len(all_jobs)} jobs  "
@@ -346,10 +386,11 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     notifier.notify_preview(shortlisted)
 
     if args.dry_run:
-        # Mark shortlisted jobs as seen so they aren't re-evaluated every run
+        # Mark shortlisted jobs as seen so they aren't re-evaluated every run.
+        # NOTE: dry-run intentionally does NOT sync to Sheets — no real actions are taken.
         for job in shortlisted:
             db.mark_seen(job)
-        console.print("  [cyan]--dry-run mode: no applications submitted.[/cyan]")
+        console.print("  [cyan]--dry-run mode: no applications submitted, Sheets not updated.[/cyan]")
         return
 
     console.print("\n  [bold yellow]⏳ Applying in 60 seconds — press Ctrl+C to abort.[/bold yellow]")
@@ -376,7 +417,7 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
             job["notes"] = result.get("error", "")
             db.mark_seen(job)
             db.log_application(job)
-            sheets.append_application(job)
+            sheets.upsert_job(job, result.get("status", "unknown"))
 
             if result.get("status") == "applied":
                 applied_count += 1

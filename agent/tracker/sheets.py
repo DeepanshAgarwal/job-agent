@@ -17,14 +17,17 @@ from typing import Any
 from loguru import logger
 
 _SHEET_HEADERS = [
-    "Date Applied",
-    "Company",
-    "Role",
-    "URL",
-    "Source",
-    "Match Score",
-    "Status",
-    "Notes",
+    "Date",             # 0  timestamp of the event (shortlisted / applied)
+    "Company",          # 1
+    "Role",             # 2
+    "URL",              # 3  used as the unique key for upserts
+    "Source",           # 4  platform name
+    "Location",         # 5
+    "Embedding Score",  # 6  sentence-transformers cosine similarity (0-100)
+    "Gemini Score",     # 7  Gemini's own fit assessment (0-100)
+    "Gemini Reasons",   # 8  semicolon-joined reasons from Gemini
+    "Outcome",          # 9  shortlisted / applied / failed / dry_run
+    "Notes",            # 10 error message or skip reason
 ]
 
 
@@ -75,29 +78,62 @@ class SheetsTracker:
             logger.error(f"SheetsTracker._get_or_create_sheet('{name}') failed: {exc}")
             return None
 
-    def append_application(self, job: dict[str, Any]) -> None:
-        """Append a new row for *job* to the "Applications" sheet.
+    def upsert_job(self, job: dict[str, Any], outcome: str) -> None:
+        """Insert or update a job row in the "Applications" sheet.
+
+        Uses the job URL as the unique key.  If a row already exists for
+        this URL, its outcome/score fields are updated while the original
+        date is preserved.  Otherwise a new row is appended.
 
         Args:
-            job: Canonical job dict with tracked fields.
+            job: Job dict with scraper + AI fields attached.
+            outcome: Pipeline stage — "shortlisted", "applied", "failed", etc.
         """
         ws = self._get_or_create_sheet("Applications")
         if ws is None:
             return
+        url = job.get("url", "")
+        if not url:
+            return
+        reasons = job.get("match_reasons") or []
+        row_data = [
+            datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            job.get("company", ""),
+            job.get("title", ""),
+            url,
+            job.get("source", ""),
+            job.get("location", ""),
+            round(float(job.get("match_score") or 0), 1),   # embedding score
+            round(float(job.get("gemini_score") or 0), 1),  # Gemini score
+            "; ".join(reasons),
+            outcome,
+            job.get("notes", ""),
+        ]
         try:
-            ws.append_row([
-                datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
-                job.get("company", ""),
-                job.get("title", ""),
-                job.get("url", ""),
-                job.get("source", ""),
-                job.get("match_score", ""),
-                job.get("status", "applied"),
-                job.get("notes", ""),
-            ])
-            logger.debug(f"Sheets: appended row for {job.get('company')}")
+            all_values = ws.get_all_values()
+            url_col = _SHEET_HEADERS.index("URL")
+            existing_row_num = None
+            for i, row in enumerate(all_values[1:], start=2):  # skip header row
+                if len(row) > url_col and row[url_col] == url:
+                    existing_row_num = i
+                    break
+            if existing_row_num:
+                row_data[0] = all_values[existing_row_num - 1][0]  # keep original date
+                end_col = chr(ord("A") + len(row_data) - 1)
+                ws.update(f"A{existing_row_num}:{end_col}{existing_row_num}", [row_data])
+            else:
+                ws.append_row(row_data)
+            logger.debug(f"Sheets: upserted '{outcome}' for {job.get('company')}")
         except Exception as exc:  # noqa: BLE001
-            logger.error(f"SheetsTracker.append_application failed: {exc}")
+            logger.error(f"SheetsTracker.upsert_job failed: {exc}")
+
+    def append_application(self, job: dict[str, Any]) -> None:
+        """Append a submitted application row (delegates to upsert_job).
+
+        Args:
+            job: Canonical job dict with tracked fields.
+        """
+        self.upsert_job(job, job.get("status", "applied"))
 
     def update_status(self, url: str, status: str) -> None:
         """Find the row matching *url* and update its Status cell.
@@ -112,8 +148,8 @@ class SheetsTracker:
         try:
             cell = ws.find(url)
             if cell:
-                ws.update_cell(cell.row, _SHEET_HEADERS.index("Status") + 1, status)
-                logger.debug(f"Sheets: updated status for {url} → {status}")
+                ws.update_cell(cell.row, _SHEET_HEADERS.index("Outcome") + 1, status)
+                logger.debug(f"Sheets: updated outcome for {url} → {status}")
         except Exception as exc:  # noqa: BLE001
             logger.error(f"SheetsTracker.update_status failed: {exc}")
 

@@ -17,16 +17,18 @@ _DB_PATH = Path(__file__).parent.parent.parent / "data" / "job_agent.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS applications (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id      TEXT,
-    company     TEXT NOT NULL,
-    role        TEXT NOT NULL,
-    url         TEXT NOT NULL UNIQUE,
-    source      TEXT,
-    match_score REAL,
-    status      TEXT DEFAULT 'applied',
-    applied_at  TEXT NOT NULL,
-    notes       TEXT
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id         TEXT,
+    company        TEXT NOT NULL,
+    role           TEXT NOT NULL,
+    url            TEXT NOT NULL UNIQUE,
+    source         TEXT,
+    match_score    REAL,    -- embedding score (sentence-transformers, 0-100)
+    gemini_score   REAL,    -- Gemini's own fit assessment (0-100)
+    gemini_reasons TEXT,    -- JSON array of Gemini match reasons
+    status         TEXT DEFAULT 'applied',
+    applied_at     TEXT NOT NULL,
+    notes          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS seen_jobs (
@@ -63,6 +65,9 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE scraped_jobs ADD COLUMN gemini_score REAL;",
     "ALTER TABLE scraped_jobs ADD COLUMN gemini_reasons TEXT;",
     "ALTER TABLE scraped_jobs ADD COLUMN gemini_decided_at TEXT;",
+    # applications table additions
+    "ALTER TABLE applications ADD COLUMN gemini_score REAL;",
+    "ALTER TABLE applications ADD COLUMN gemini_reasons TEXT;",
 ]
 
 
@@ -217,13 +222,16 @@ class Database:
         Args:
             job: Job dict; must contain ``url``, ``company``, ``title``.
         """
+        import json as _json
         with self._connect() as conn:
             try:
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO applications
-                        (job_id, company, role, url, source, match_score, status, applied_at, notes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (job_id, company, role, url, source,
+                         match_score, gemini_score, gemini_reasons,
+                         status, applied_at, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         job.get("id"),
@@ -231,7 +239,9 @@ class Database:
                         job.get("title", ""),
                         job.get("url", ""),
                         job.get("source", ""),
-                        job.get("match_score"),
+                        job.get("match_score"),           # embedding score
+                        job.get("gemini_score"),          # Gemini's fit score
+                        _json.dumps(job.get("match_reasons") or []),
                         job.get("status", "applied"),
                         datetime.utcnow().isoformat(),
                         job.get("notes", ""),

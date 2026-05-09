@@ -14,7 +14,9 @@ from loguru import logger
 class Matcher:
     """Score job relevance using sentence-transformers cosine similarity."""
 
-    _MODEL_NAME = "all-MiniLM-L6-v2"
+    # all-mpnet-base-v2: best overall quality sentence-transformer model.
+    # ~420MB, ~30-60s for 1000 jobs on CPU — acceptable for a background pipeline.
+    _MODEL_NAME = "all-mpnet-base-v2"
 
     def __init__(self) -> None:
         """Load the sentence-transformers model (cached on first call)."""

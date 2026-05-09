@@ -73,10 +73,15 @@ company_whitelist: []
 job_type: "fulltime"   # fulltime | contract | parttime
 
 # Only consider jobs posted within this many hours
-posted_within_hours: 24
+posted_within_hours: 48
+
+# Maximum jobs sent to Gemini per run.
+# Jobs are sorted by embedding score (best first); only the top N reach Gemini.
+# Keeps runtime and API quota under control. Increase if you have a paid key.
+max_gemini_calls: 100
 
 # Minimum AI match score (0-100) required to apply
-min_match_score: 65
+# min_match_score: 65
 
 # Safety cap: maximum applications submitted per day
 max_applications_per_day: 15

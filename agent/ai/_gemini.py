@@ -12,20 +12,15 @@ from typing import Any
 from loguru import logger
 
 # Models tried in priority order — first one that responds wins.
-# Free-tier RPD limits (as of 2025):
-#   gemini-2.0-flash-lite : 1500 RPD, 30 RPM
-#   gemini-2.0-flash      : 1500 RPD, 15 RPM
-#   gemini-1.5-flash-8b   : 1500 RPD, 15 RPM
-#   gemini-1.5-flash      : 1500 RPD, 15 RPM
-#   gemini-2.5-flash      :   20 RPD, 10 RPM  ← last resort only
+# Free-tier RPD limits (as of May 2026) — check yours at aistudio.google.com/rate-limit:
+#   gemini-3.1-flash-lite : 500 RPD  ← best for high-volume free-tier use
+#   gemini-2.5-flash      :  20 RPD
+#   gemini-2.5-flash-lite :  20 RPD
+# NOTE: gemini-2.0-* and gemini-1.5-* are deprecated as of May 2026.
 _MODEL_PRIORITY: list[str] = [
-    "models/gemini-2.0-flash-lite",
-    "models/gemini-2.0-flash",
-    "models/gemini-1.5-flash-8b",
-    "models/gemini-1.5-flash",
+    "models/gemini-3.1-flash-lite",
     "models/gemini-2.5-flash",
-    "models/gemini-flash-lite-latest",
-    "models/gemini-flash-latest",
+    "models/gemini-2.5-flash-lite",
 ]
 
 # Module-level cache: None = not yet probed, tuple = (client, model) result.

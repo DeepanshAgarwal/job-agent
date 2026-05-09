@@ -38,15 +38,8 @@ sys.path.insert(0, str(ROOT))
 
 _CDP_PORT = 9222
 
-# Preferred Gemini models in priority order (first available one is used).
-# Must use the full "models/" prefix as returned by the SDK's models.list().
-_GEMINI_MODEL_PRIORITY = [
-    "models/gemini-2.0-flash-lite",
-    "models/gemini-2.0-flash",
-    "models/gemini-2.5-flash",
-    "models/gemini-flash-lite-latest",
-    "models/gemini-flash-latest",
-]
+# Import the canonical model priority list from the shared Gemini module.
+from agent.ai._gemini import _MODEL_PRIORITY as _GEMINI_MODEL_PRIORITY  # noqa: E402
 
 # Standard Chrome executable locations per OS
 _CHROME_PATHS = [
