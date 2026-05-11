@@ -59,7 +59,7 @@ class SlackNotifier:
         for job in jobs:
             lines.append(
                 f"• {job.get('company')} — {job.get('title')} "
-                f"(score: {job.get('match_score', 0):.1f}) <{job.get('url')}|link>"
+                f"(score: {(job.get('match_score') or 0):.1f}) <{job.get('url')}|link>"
             )
         lines.append("\n⏳ _Apply in 60 seconds unless aborted (Ctrl+C)_")
         self._post({"text": "\n".join(lines)})
@@ -73,7 +73,7 @@ class SlackNotifier:
         self._post({
             "text": (
                 f"✅ *Applied!* {job.get('company')} — {job.get('title')}\n"
-                f"Score: {job.get('match_score', 0):.1f} | <{job.get('url')}|View Job>"
+                f"Score: {(job.get('match_score') or 0):.1f} | <{job.get('url')}|View Job>"
             )
         })
 

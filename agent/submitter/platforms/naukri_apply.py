@@ -71,9 +71,15 @@ class NaukriApplyHandler:
                     return {"status": "dry_run", "error": ""}
 
                 submit_btn = session_page.locator(self._SELECTORS["submit_btn"])
-                if await submit_btn.count() > 0:
-                    await submit_btn.first.click()
-                    await session_page.wait_for_load_state("domcontentloaded", timeout=15_000)
+                if await submit_btn.count() == 0:
+                    return {"status": "failed", "error": "Submit button not found"}
+                await submit_btn.first.click()
+                await session_page.wait_for_load_state("domcontentloaded", timeout=15_000)
+
+                # Check for a success indicator; fall back to assuming success
+                success = session_page.locator(self._SELECTORS["success_indicator"])
+                if await success.count() == 0:
+                    logger.warning(f"Naukri: success indicator not found for {job.get('company')} — may have failed")
 
                 logger.info(f"Naukri: applied to {job.get('company')} — {job.get('title')}")
                 return {"status": "applied", "error": ""}
@@ -82,5 +88,10 @@ class NaukriApplyHandler:
                 logger.error(f"NaukriApplyHandler error: {exc}")
                 return {"status": "failed", "error": str(exc)}
             finally:
+                try:
+                    screenshot_path = f"data/screenshots/naukri_{job.get('company', 'unknown')[:20]}.png"
+                    await session_page.screenshot(path=screenshot_path)
+                except Exception:  # noqa: BLE001
+                    pass
                 await context.close()
                 await browser.close()

@@ -18,7 +18,7 @@ cd job-agent
 
 # Create a virtual environment
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate  # Windows: source .venv/Scripts/activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -51,29 +51,29 @@ Edit `config/profile.yaml` with your real details:
 
 ```yaml
 personal:
-  first_name: "Jane"
-  last_name: "Doe"
-  email: "jane@example.com"
-  phone: "+91-9876543210"
-  location: "Bangalore, India"
+    first_name: "Jane"
+    last_name: "Doe"
+    email: "jane@example.com"
+    phone: "+91-9876543210"
+    location: "Bangalore, India"
 
 links:
-  linkedin: "https://linkedin.com/in/janedoe"
-  github: "https://github.com/janedoe"
+    linkedin: "https://linkedin.com/in/janedoe"
+    github: "https://github.com/janedoe"
 ```
 
 Edit `config/preferences.yaml` to match your job search criteria:
 
 ```yaml
 roles:
-  - "Senior Backend Engineer"
-  - "Python Developer"
+    - "Senior Backend Engineer"
+    - "Python Developer"
 
 salary:
-  min_lpa: 18
+    min_lpa: 18
 
 keywords_must_have:
-  - "Python"
+    - "Python"
 ```
 
 ---
@@ -115,10 +115,10 @@ without them but won't send notifications or sync to Sheets.
 5. Create a new Google Sheet → copy the Sheet ID from the URL
 6. Share the sheet with the service account email (Editor access)
 7. Add to `.env`:
-   ```
-   GOOGLE_SHEETS_CREDENTIALS_PATH=auth/google_credentials.json
-   GOOGLE_SHEET_ID=1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms
-   ```
+    ```
+    GOOGLE_SHEETS_CREDENTIALS_PATH=auth/google_credentials.json
+    GOOGLE_SHEET_ID=1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms
+    ```
 8. Run: `python setup.py --init-sheets`
 
 ---
@@ -129,9 +129,9 @@ without them but won't send notifications or sync to Sheets.
 2. Create a new app → choose **Incoming Webhooks**
 3. Activate webhooks → Add New Webhook to Workspace
 4. Copy the Webhook URL and add to `.env`:
-   ```
-   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
-   ```
+    ```
+    SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
+    ```
 
 ---
 
@@ -147,7 +147,7 @@ python setup.py --login all
 python setup.py --login naukri
 ```
 
-A browser window will open.  Log in manually, then press **Enter** in the
+A browser window will open. Log in manually, then press **Enter** in the
 terminal to save the session.
 
 ---
@@ -171,6 +171,7 @@ python agent/main.py --dry-run
 ```
 
 Review the output:
+
 - Check the scraped jobs look relevant
 - Verify match scores seem reasonable
 - Confirm cover letters (if shown) look good
@@ -186,6 +187,7 @@ python agent/main.py --run
 ```
 
 The agent will:
+
 1. Parse your resume
 2. Scrape all enabled job boards
 3. Score and filter jobs with AI
@@ -209,6 +211,7 @@ crontab -e
 ### Windows Task Scheduler
 
 Create a Basic Task:
+
 - Trigger: Daily at 8:00 AM
 - Action: Start a program
 - Program: `C:\path\to\job-agent\.venv\Scripts\python.exe`
@@ -231,10 +234,10 @@ Open [http://localhost:8501](http://localhost:8501) in your browser.
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|---------|
-| `Resume not found` | Copy your PDF to `config/resume.pdf` |
-| `GEMINI_API_KEY not set` | Add to `.env` file |
-| Scraper returns 0 jobs | Selectors may have changed — see `docs/platform-notes.md` |
-| Session expired | Re-run `python setup.py --login <platform>` |
-| `playwright install` failed | Run `playwright install chromium --with-deps` |
+| Issue                       | Solution                                                  |
+| --------------------------- | --------------------------------------------------------- |
+| `Resume not found`          | Copy your PDF to `config/resume.pdf`                      |
+| `GEMINI_API_KEY not set`    | Add to `.env` file                                        |
+| Scraper returns 0 jobs      | Selectors may have changed — see `docs/platform-notes.md` |
+| Session expired             | Re-run `python setup.py --login <platform>`               |
+| `playwright install` failed | Run `playwright install chromium --with-deps`             |

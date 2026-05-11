@@ -15,7 +15,8 @@ from loguru import logger
 
 _SCREENSHOTS_DIR = Path(__file__).parent.parent.parent / "data" / "screenshots"
 
-# Platform URL patterns → handler module key
+# Platform URL patterns → handler module key.
+# ORDER MATTERS: more-specific patterns first (greenhouse before generic).
 _PLATFORM_PATTERNS: list[tuple[str, str]] = [
     (r"greenhouse\.io", "greenhouse"),
     (r"lever\.co", "lever"),
@@ -23,7 +24,16 @@ _PLATFORM_PATTERNS: list[tuple[str, str]] = [
     (r"instahyre\.com", "instahyre"),
     (r"internshala\.com", "internshala"),
     (r"unstop\.com", "unstop"),
+    # Job boards that have their own session-based apply flow.
+    # These must come AFTER the ATS patterns so that a Greenhouse URL scraped
+    # via Indeed is routed to GreenhouseHandler, not IndeedApplyHandler.
+    (r"indeed\.com", "indeed"),
+    (r"linkedin\.com", "linkedin"),
 ]
+
+# These handlers manage their own Playwright browser + saved session internally.
+# FormFiller must NOT create a browser for them — they ignore the passed page.
+_SESSION_MANAGED_PLATFORMS = {"naukri", "instahyre", "internshala", "unstop", "indeed", "linkedin"}
 
 
 class FormFiller:
@@ -64,13 +74,26 @@ class FormFiller:
             logger.error("playwright not installed — cannot submit applications.")
             return {"status": "failed", "error": "playwright not installed", "screenshot_path": ""}
 
+        handler = self._get_handler(platform)
+
+        # Session-managed handlers (Naukri, Instahyre, etc.) launch their own
+        # Playwright browser with saved session cookies.  Do NOT create a browser
+        # here — they ignore the passed page and we'd end up with two browsers.
+        if platform in _SESSION_MANAGED_PLATFORMS:
+            try:
+                result = await handler.fill(None, job, profile, cover_letter, dry_run)
+                result.setdefault("screenshot_path", "")
+                return result
+            except Exception as exc:  # noqa: BLE001
+                logger.error(f"FormFiller error for {url}: {exc}")
+                return {"status": "failed", "error": str(exc), "screenshot_path": ""}
+
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
             context = await browser.new_context()
             page = await context.new_page()
 
             try:
-                handler = self._get_handler(platform)
                 result = await handler.fill(page, job, profile, cover_letter, dry_run)
                 await page.screenshot(path=screenshot_path)
                 result["screenshot_path"] = screenshot_path
@@ -117,5 +140,11 @@ class FormFiller:
         if platform == "unstop":
             from agent.submitter.platforms.unstop_apply import UnstopApplyHandler
             return UnstopApplyHandler()
+        if platform == "indeed":
+            from agent.submitter.platforms.indeed_apply import IndeedApplyHandler
+            return IndeedApplyHandler()
+        if platform == "linkedin":
+            from agent.submitter.platforms.linkedin_apply import LinkedInApplyHandler
+            return LinkedInApplyHandler()
         from agent.submitter.platforms.generic import GenericHandler
         return GenericHandler()

@@ -113,6 +113,14 @@ class JobSpyScraper(BaseScraper):
             if not url:
                 continue
 
+            # For Indeed, prefer job_url_direct (the company's actual ATS page)
+            # over the Indeed listing URL.  This lets form_filler correctly detect
+            # and route to Greenhouse/Lever/etc. instead of always using generic.
+            direct_url = str(row.get("job_url_direct") or "")
+            _BOARD_DOMAINS = ("indeed.com", "linkedin.com", "glassdoor.com")
+            if direct_url and not any(d in direct_url for d in _BOARD_DOMAINS):
+                url = direct_url
+
             # Parse posted_at — jobspy returns a datetime or string
             raw_date = row.get("date_posted") or row.get("posted_at")
             posted_at: str = ""
@@ -149,7 +157,13 @@ class JobSpyScraper(BaseScraper):
                     url=url,
                     source=source,
                     location=str(row.get("location") or ""),
-                    description=str(row.get("description") or ""),
+                    description=str(row.get("description") or "") or (
+                        # LinkedIn often returns empty descriptions due to anti-scraping.
+                        # Fall back to title+company+location so embedding has signal.
+                        f"{row.get('title', '')} at {row.get('company', '')}, {row.get('location', '')}"
+                        if source == "linkedin"
+                        else ""
+                    ),
                     posted_at=posted_at,
                     salary=salary_str,
                 )

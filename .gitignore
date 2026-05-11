@@ -222,5 +222,9 @@ auth/*.json
 auth/chrome-cdp-profile
 auth/*_session.json
 data/*.db
+data/screenshots
+
+config/resume.parsed_cache.json
+
 .env
 

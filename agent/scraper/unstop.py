@@ -114,6 +114,23 @@ class UnstopScraper(BaseScraper):
                     loc_el = await card.query_selector(".location, [class*='location']")
                     location = (await loc_el.inner_text()).strip() if loc_el else "India"
 
+                    # Extract skill tags / eligible branches shown on the listing card
+                    # so the embedding scorer gets meaningful text instead of empty string.
+                    skill_els = (
+                        await card.query_selector_all(".opp-tag, .tags-bar span, [class*='tag'] span")
+                        or await card.query_selector_all("[class*='skill'], [class*='branch'], [class*='eligible']")
+                    )
+                    skills: list[str] = []
+                    for el in skill_els[:12]:
+                        txt = (await el.inner_text()).strip()
+                        if txt:
+                            skills.append(txt)
+                    description = (
+                        f"{title} at {company}, {location}. Skills: {', '.join(skills)}"
+                        if skills
+                        else f"{title} at {company}, {location}"
+                    )
+
                     job_url = href if href.startswith("http") else _BASE_URL + href
                     jobs.append(
                         self.build_job(
@@ -122,6 +139,7 @@ class UnstopScraper(BaseScraper):
                             url=job_url,
                             source="unstop",
                             location=location,
+                            description=description,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001
@@ -151,6 +169,8 @@ class UnstopScraper(BaseScraper):
                             location = ln.split("|")[-1].strip()
                             break
 
+                    description = f"{title} at {company}, {location}"
+
                     jobs.append(
                         self.build_job(
                             title=title,
@@ -158,6 +178,7 @@ class UnstopScraper(BaseScraper):
                             url=job_url,
                             source="unstop",
                             location=location,
+                            description=description,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001

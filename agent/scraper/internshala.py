@@ -108,6 +108,24 @@ class InternshalasScraper(BaseScraper):
                 )
                 location = (await loc_el.inner_text()).strip() if loc_el else "India"
 
+                # Extract skills shown on the listing card for embedding quality.
+                # Internshala shows skills like "React Node.js Python" right on the card.
+                skill_els = (
+                    await card.query_selector_all(".all_tech .tech_stack")
+                    or await card.query_selector_all(".round_tags .round_tag")
+                    or await card.query_selector_all("[class*='tech'] span, [class*='skill'] span")
+                )
+                skills: list[str] = []
+                for el in skill_els[:12]:
+                    txt = (await el.inner_text()).strip()
+                    if txt:
+                        skills.append(txt)
+                description = (
+                    f"{title} at {company}, {location}. Skills: {', '.join(skills)}"
+                    if skills
+                    else f"{title} at {company}, {location}"
+                )
+
                 jobs.append(
                     self.build_job(
                         title=title,
@@ -115,6 +133,7 @@ class InternshalasScraper(BaseScraper):
                         url=job_url,
                         source="internshala",
                         location=location,
+                        description=description,
                     )
                 )
             except Exception as exc:  # noqa: BLE001

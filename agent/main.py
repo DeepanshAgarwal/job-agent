@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TaskID, TextColumn
 from rich.table import Table
 
 # Ensure the repo root is on PYTHONPATH when running from any directory
@@ -32,7 +32,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from agent.ai.analyzer import Analyzer
 from agent.ai.matcher import Matcher
 from agent.ai.resume_parser import ResumeParser
-from agent.ai.writer import Writer
 from agent.notifier.slack import SlackNotifier
 from agent.scraper.cutshort import CutshortScraper
 from agent.scraper.foundit import FounditScraper
@@ -42,12 +41,33 @@ from agent.scraper.internshala import InternshalasScraper
 from agent.scraper.jobspy_scraper import JobSpyScraper
 from agent.scraper.naukri import NaukriScraper
 from agent.scraper.unstop import UnstopScraper
-from agent.submitter.form_filler import FormFiller
 from agent.tracker.database import Database
 from agent.tracker.sheets import SheetsTracker
 
 console = Console()
 load_dotenv()
+
+# Log level: WARNING by default — only errors/warnings surface to the console.
+# Run with --debug to restore full verbose output.
+_DEBUG_MODE = "--debug" in sys.argv
+logger.remove()
+logger.add(
+    sys.stderr,
+    level="DEBUG" if _DEBUG_MODE else "WARNING",
+    colorize=True,
+    format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
+)
+
+# Log level: WARNING by default so only errors surface at the console.
+# Pass --debug to restore verbose output.
+_DEBUG_MODE = "--debug" in sys.argv
+logger.remove()
+logger.add(
+    sys.stderr,
+    level="DEBUG" if _DEBUG_MODE else "WARNING",
+    colorize=True,
+    format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
+)
 
 # Suppress noisy 3rd-party model-loading warnings ────────────────────────────
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
@@ -150,6 +170,117 @@ def build_scraper_list(platforms: dict) -> list:
     return scrapers
 
 
+async def _apply_jobs(
+    shortlisted: list[dict],
+    session_id: str,
+    profile: dict,
+    db: "Database",
+    sheets: "SheetsTracker",
+    notifier: "SlackNotifier",
+    dry_run: bool = False,
+) -> int:
+    """Apply to each shortlisted job and record all outcomes.  Returns applied count."""
+    from agent.submitter.form_filler import FormFiller
+    from agent.ai.writer import Writer
+
+    writer = Writer()
+    filler = FormFiller()
+    applied_count = 0
+
+    for job in shortlisted:
+        url = job.get("url", "")
+        outcome = "failed"
+        error_reason = ""
+        cover_letter = ""
+        try:
+            cover_letter = writer.generate_cover_letter(
+                job.get("_resume_dict", {}), job
+            )
+            result = await filler.apply_to_job(job, profile, cover_letter, dry_run=dry_run)
+            outcome = result.get("status", "failed")
+            error_reason = result.get("error", "")
+            job["status"] = outcome
+            job["notes"] = error_reason
+            if outcome == "applied":
+                applied_count += 1
+                notifier.notify_applied(job)
+                console.print(f"  ✅ Applied:  {job.get('company')} — {job.get('title')}")
+            elif outcome == "manual_apply":
+                console.print(
+                    f"  📋 Manual:  {job.get('company')} — {job.get('title')}\n"
+                    f"              Apply manually: {url[:90]}"
+                )
+            else:
+                notifier.notify_failed(job, error_reason or "Unknown error")
+                console.print(
+                    f"  ❌ Failed:   {job.get('company')} — {job.get('title')}\n"
+                    f"              Reason: {error_reason or 'unknown'}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            outcome = "failed"
+            error_reason = str(exc)
+            job["status"] = outcome
+            job["notes"] = error_reason
+            logger.error(f"Submission error for {url}: {exc}")
+            notifier.notify_failed(job, error_reason)
+            console.print(
+                f"  ❌ Error:    {job.get('company')} — {job.get('title')}\n"
+                f"              Reason: {error_reason}"
+            )
+        finally:
+            job["session_id"] = session_id  # needed by sheets.upsert_job
+            db.record_outcome(session_id, url, outcome, failure_reason=error_reason, cover_letter=cover_letter)
+            db.mark_seen(job, session_id=session_id)
+            db.log_application(job, session_id=session_id)
+            if outcome == "manual_apply":
+                sheets.upsert_manual_apply(job, error_reason)
+            else:
+                sheets.upsert_job(job, outcome)
+
+    return applied_count
+
+
+async def run_retry(args: argparse.Namespace, config: dict) -> None:
+    """Re-run the apply phase for failed/shortlisted jobs from the last session."""
+    profile = config["profile"]
+    db = Database()
+    db.init_db()
+    notifier = SlackNotifier()
+    sheets = SheetsTracker()
+
+    session_id = args.session or None
+    retry_jobs = db.get_retry_jobs(session_id)
+
+    if not retry_jobs:
+        console.print("  [yellow]No retryable jobs found (no failed/shortlisted in last session).[/yellow]")
+        return
+
+    console.print(f"  Found [bold]{len(retry_jobs)}[/bold] job(s) to retry.")
+
+    # Parse resume so writer can generate cover letters
+    parser_r = ResumeParser()
+    resume_path = profile.get("resume", {}).get("path", "config/resume.pdf")
+    resume_dict = parser_r.parse(resume_path)
+    for job in retry_jobs:
+        job["_resume_dict"] = resume_dict
+
+    new_session_id = db.create_session()
+    console.rule("[bold green]Retry — Submitting[/bold green]")
+    applied = await _apply_jobs(
+        retry_jobs, new_session_id, profile, db, sheets, notifier, dry_run=args.dry_run
+    )
+    db.finish_session(new_session_id, {
+        "total_scraped": 0,
+        "total_scored": 0,
+        "total_gemini": 0,
+        "total_shortlisted": len(retry_jobs),
+        "total_applied": applied,
+        "total_failed": len(retry_jobs) - applied,
+    })
+    console.print(f"  Applied: [bold green]{applied}[/bold green] / {len(retry_jobs)}")
+    sheets.sync_stats(db.get_stats())
+
+
 async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     """Execute the full job application pipeline."""
     preferences = config["preferences"]
@@ -158,6 +289,20 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
 
     db = Database()
     db.init_db()
+
+    # Create a session record immediately — every run is tracked
+    import hashlib as _hashlib
+    _resume_path = profile.get("resume", {}).get("path", "config/resume.pdf")
+    try:
+        _resume_hash = _hashlib.sha256(Path(ROOT / _resume_path).read_bytes()).hexdigest()[:12]
+    except Exception:
+        _resume_hash = ""
+    try:
+        _prefs_text = (CONFIG_DIR / "preferences.yaml").read_text()
+        _prefs_hash = _hashlib.sha256(_prefs_text.encode()).hexdigest()[:12]
+    except Exception:
+        _prefs_hash = ""
+    session_id = db.create_session(resume_hash=_resume_hash, prefs_hash=_prefs_hash)
 
     notifier = SlackNotifier()
     sheets = SheetsTracker()
@@ -191,42 +336,69 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     scrapers = build_scraper_list(platforms)
     all_jobs: list[dict] = []
 
-    console.print(f"  Running {len(scrapers)} scraper(s) in parallel…")
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as _prog:
-        _stasks = {
-            s.__class__.__name__: _prog.add_task(
-                f"  [cyan]{s.__class__.__name__}[/cyan] — scraping…", total=None
+    roles = preferences.get("roles", [])
+    locations = preferences.get("locations", [])
+    searches_per_scraper = max(1, len(roles) * len(locations))
+    total_searches = len(scrapers) * searches_per_scraper
+
+    async def _run_scraper(
+        scraper,
+        progress: Progress,
+        global_task: TaskID,
+        scraper_task: TaskID,
+    ) -> tuple[str, list[dict]]:
+        name = scraper.__class__.__name__
+        short = name.replace("Scraper", "")
+
+        def _advance() -> None:
+            progress.advance(global_task)
+            progress.advance(scraper_task)
+
+        try:
+            jobs = await scraper.scrape(preferences, on_search_done=_advance)
+            progress.update(
+                scraper_task,
+                description=f"[green]✓ {short}[/green] — {len(jobs)} found",
+                completed=searches_per_scraper,
+            )
+            return name, jobs
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Scraper {name} failed: {exc}")
+            progress.update(
+                scraper_task,
+                description=f"[red]✗ {short}[/red] — error",
+                completed=searches_per_scraper,
+            )
+            return name, []
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(bar_width=30),
+        MofNCompleteColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        global_task = progress.add_task("[bold]Total[/bold]", total=total_searches)
+        scraper_tasks = [
+            (
+                s,
+                progress.add_task(
+                    f"[dim]{s.__class__.__name__.replace('Scraper', '')}[/dim]",
+                    total=searches_per_scraper,
+                ),
             )
             for s in scrapers
-        }
-
-        async def _run_scraper(scraper) -> tuple[str, list[dict]]:
-            name = scraper.__class__.__name__
-            try:
-                jobs = await scraper.scrape(preferences)
-                _prog.update(
-                    _stasks[name],
-                    description=f"  [green]✓ {name}[/green] — {len(jobs)} scraped",
-                    total=1, completed=1,
-                )
-                return name, jobs
-            except Exception as exc:  # noqa: BLE001
-                logger.error(f"Scraper {name} failed: {exc}")
-                _prog.update(
-                    _stasks[name],
-                    description=f"  [red]✗ {name}[/red] — failed",
-                    total=1, completed=1,
-                )
-                return name, []
-
-        results = await asyncio.gather(*[_run_scraper(s) for s in scrapers])
+        ]
+        results = await asyncio.gather(
+            *[_run_scraper(s, progress, global_task, tid) for s, tid in scraper_tasks]
+        )
 
     for name, jobs in results:
-        db.upsert_scraped_jobs(jobs)  # record everything scraped, new or not
+        db.upsert_jobs(jobs)  # canonical job table — INSERT OR IGNORE
         new_jobs = [j for j in jobs if not db.is_seen(j["url"])]
+        db.set_outcome_bulk(session_id, [j["url"] for j in new_jobs], "pending")
         all_jobs.extend(new_jobs)
-        if jobs:
-            console.print(f"    {name}: {len(new_jobs)} new / {len(jobs)} total")
 
     console.print(f"\n  📋 Total new jobs found: [bold]{len(all_jobs)}[/bold]")
     notifier.notify_scrape_complete(len(all_jobs))
@@ -236,8 +408,8 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
         return
 
     if args.scrape_only:
-        for job in all_jobs:
-            db.mark_seen(job)
+        db.set_outcome_bulk(session_id, [j["url"] for j in all_jobs], "pending")
+        db.finish_session(session_id, {"total_scraped": len(all_jobs)})
         console.print("  [cyan]--scrape-only mode: jobs saved, no applications submitted.[/cyan]")
         return
 
@@ -257,7 +429,7 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
         progress.update(task, description=f"✅ Scored {len(all_jobs)} jobs")
 
     for job in all_jobs:
-        db.update_job_score(job["url"], job.get("match_score", 0.0))
+        db.record_embedding_score(session_id, job["url"], job.get("match_score", 0.0))
 
     # ── Step 4: Gemini analysis ──────────────────────────────────────────────
     console.rule("[bold green]Step 4 — Gemini Fit Analysis[/bold green]")
@@ -281,9 +453,9 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     keyword_matched = [j for j in all_jobs if _has_keyword_match(j)]
     keyword_rejected = [j for j in all_jobs if not _has_keyword_match(j)]
 
+    db.set_outcome_bulk(session_id, [j["url"] for j in keyword_rejected], "low_score")
     for job in keyword_rejected:
-        db.mark_seen(job)
-        db.update_job_outcome(job["url"], "low_score")
+        db.mark_seen(job, session_id=session_id)
 
     # Sort matched jobs by embedding score descending, then cap at max_gemini_calls.
     # Jobs beyond the cap are marked low_score — they'll re-surface next run if
@@ -293,18 +465,17 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     gemini_batch = keyword_matched[:max_gemini]
     gemini_overflow = keyword_matched[max_gemini:]
 
-    for job in gemini_overflow:
-        db.update_job_outcome(job["url"], "low_score")
+    db.set_outcome_bulk(session_id, [j["url"] for j in gemini_overflow], "deferred")
 
     console.print(
         f"  📊 Keyword filter: [bold]{len(keyword_matched)}[/bold] matched, "
         f"[bold]{len(gemini_batch)}[/bold] sent to Gemini "
-        f"([dim]{len(keyword_rejected)} irrelevant, {len(gemini_overflow)} deferred[/dim])"
+        f"([dim]{len(keyword_rejected)} irrelevant, {len(gemini_overflow)} deferred to next run[/dim])"
     )
 
     analyzer = Analyzer()
     shortlisted: list[dict] = []
-    skipped_low_score = len(keyword_rejected) + len(gemini_overflow)
+    skipped_low_score = len(keyword_rejected)
     skipped_ai = 0
     with Progress(
         SpinnerColumn(),
@@ -331,25 +502,29 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
                 gemini_score = job["gemini_score"]
                 gemini_reasons = job["match_reasons"]
                 if analysis.get("should_apply"):
-                    notes = "; ".join(gemini_reasons)
-                    db.update_job_outcome(
-                        job["url"], "shortlisted", notes,
+                    db.record_gemini_decision(
+                        session_id, job["url"],
                         gemini_score=gemini_score, gemini_reasons=gemini_reasons,
+                        decision="apply", outcome="shortlisted",
                     )
+                    job["session_id"] = session_id
                     sheets.upsert_job(job, "shortlisted")
+                    job["_resume_dict"] = resume_dict  # pass through for cover-letter writer
                     shortlisted.append(job)
                 else:
-                    db.mark_seen(job)
-                    notes = analysis.get("skip_reason") or "; ".join(gemini_reasons)
-                    db.update_job_outcome(
-                        job["url"], "ai_rejected", notes,
+                    failure_reason = analysis.get("skip_reason") or "; ".join(gemini_reasons)
+                    db.record_gemini_decision(
+                        session_id, job["url"],
                         gemini_score=gemini_score, gemini_reasons=gemini_reasons,
+                        decision="reject", outcome="ai_rejected",
+                        failure_reason=failure_reason,
                     )
+                    db.mark_seen(job, session_id=session_id)
                     skipped_ai += 1
             except Exception as exc:  # noqa: BLE001
                 logger.error(f"Gemini analysis failed for {job.get('url')}: {exc}")
-                db.mark_seen(job)
-                db.update_job_outcome(job["url"], "error", str(exc))
+                db.record_outcome(session_id, job["url"], "error", failure_reason=str(exc))
+                db.mark_seen(job, session_id=session_id)
             _prog.advance(_gtask)
 
     console.print(
@@ -386,10 +561,14 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
     notifier.notify_preview(shortlisted)
 
     if args.dry_run:
-        # Mark shortlisted jobs as seen so they aren't re-evaluated every run.
-        # NOTE: dry-run intentionally does NOT sync to Sheets — no real actions are taken.
         for job in shortlisted:
-            db.mark_seen(job)
+            db.mark_seen(job, session_id=session_id)
+        db.finish_session(session_id, {
+            "total_scraped": len(all_jobs),
+            "total_scored": len(all_jobs),
+            "total_gemini": len(gemini_batch),
+            "total_shortlisted": len(shortlisted),
+        })
         console.print("  [cyan]--dry-run mode: no applications submitted, Sheets not updated.[/cyan]")
         return
 
@@ -402,39 +581,35 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
         console.print("\n  [red]Aborted by user.[/red]")
         return
 
-    # ── Step 6–9: Generate cover letters + submit ────────────────────────────
+    # ── Step 6: Generate cover letters + submit ──────────────────────────────
     console.rule("[bold green]Step 6 — Generating Cover Letters & Submitting[/bold green]")
-    writer = Writer()
-    filler = FormFiller()
-    applied_count = 0
+    applied_count = await _apply_jobs(
+        shortlisted, session_id, profile, db, sheets, notifier, dry_run=False
+    )
+    failed_count = len(shortlisted) - applied_count
 
-    for job in shortlisted:
-        try:
-            cover_letter = writer.generate_cover_letter(resume_dict, job)
-            result = await filler.apply_to_job(job, profile, cover_letter, dry_run=False)
-
-            job["status"] = result.get("status", "unknown")
-            job["notes"] = result.get("error", "")
-            db.mark_seen(job)
-            db.log_application(job)
-            sheets.upsert_job(job, result.get("status", "unknown"))
-
-            if result.get("status") == "applied":
-                applied_count += 1
-                notifier.notify_applied(job)
-                console.print(f"  ✅ Applied: {job.get('company')} — {job.get('title')}")
-            else:
-                notifier.notify_failed(job, result.get("error", "Unknown error"))
-                console.print(f"  ❌ Failed:  {job.get('company')} — {result.get('error')}")
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"Submission failed for {job.get('url')}: {exc}")
-            notifier.notify_failed(job, str(exc))
+    # ── Finish session ────────────────────────────────────────────────────────
+    db.finish_session(session_id, {
+        "total_scraped": len(all_jobs),
+        "total_scored": len(all_jobs),
+        "total_gemini": len(gemini_batch),
+        "total_shortlisted": len(shortlisted),
+        "total_applied": applied_count,
+        "total_failed": failed_count,
+    })
 
     # ── Final summary ────────────────────────────────────────────────────────
     stats = db.get_stats()
     console.rule("[bold green]Done[/bold green]")
-    console.print(f"  Applied today: [bold green]{applied_count}[/bold green]")
-    console.print(f"  Total in DB:   [bold]{stats.get('total_applied', 0)}[/bold]")
+    console.print(f"  Applied:        [bold green]{applied_count}[/bold green]")
+    console.print(f"  Failed:         [bold red]{failed_count}[/bold red]")
+    console.print(f"  Session ID:     [dim]{session_id}[/dim]")
+    console.print(f"  All-time total: [bold]{stats.get('total_applied_all_time', 0)}[/bold]")
+    if failed_count:
+        console.print(
+            f"  [yellow]Tip: re-run failed jobs with [bold]--retry-failed[/bold][/yellow]"
+        )
+    sheets.sync_stats(stats)
     notifier.notify_summary(stats)
 
 
@@ -447,11 +622,12 @@ def show_status(config: dict) -> None:
     table = Table(title="Application Stats", show_lines=True)
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="white")
-    table.add_row("Total Applied", str(stats.get("total_applied", 0)))
-    for platform, count in stats.get("by_platform", {}).items():
-        table.add_row(f"  {platform}", str(count))
-    table.add_row("Applied", str(stats.get("by_status", {}).get("applied", 0)))
-    table.add_row("Failed", str(stats.get("by_status", {}).get("failed", 0)))
+    table.add_row("Session", stats.get("session_id", "—"))
+    table.add_row("Scraped this run", str(stats.get("total_scraped", 0)))
+    table.add_row("Shortlisted", str(stats.get("total_shortlisted", 0)))
+    for outcome, count in stats.get("by_outcome", {}).items():
+        table.add_row(f"  {outcome}", str(count))
+    table.add_row("Applied (all-time)", str(stats.get("total_applied_all_time", stats.get("total_applied", 0))))
     console.print(table)
 
 
@@ -465,6 +641,14 @@ def main() -> None:
     parser.add_argument("--scrape-only", action="store_true", help="Only scrape and save jobs")
     parser.add_argument("--limit", type=int, default=None, help="Max applications to submit")
     parser.add_argument("--status", action="store_true", help="Show stats and exit")
+    parser.add_argument(
+        "--retry-failed", action="store_true",
+        help="Re-run apply phase for failed/shortlisted jobs from the last session",
+    )
+    parser.add_argument(
+        "--session", type=str, default=None, metavar="SESSION_ID",
+        help="Session ID to retry (used with --retry-failed; defaults to most recent)",
+    )
     args = parser.parse_args()
 
     print_banner()
@@ -478,6 +662,10 @@ def main() -> None:
 
     if args.status:
         show_status(config)
+        return
+
+    if args.retry_failed:
+        asyncio.run(run_retry(args, config))
         return
 
     if not (args.run or args.dry_run or args.scrape_only):

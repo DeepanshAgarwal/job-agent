@@ -16,17 +16,21 @@ scrape_from:
         login_required: true
         login_url: https://www.instahyre.com/candidate/login/
     linkedin:
-        enabled: true
+        enabled: false
         login_required: true
         login_url: https://www.linkedin.com/login
     internshala:
-        enabled: true
+        enabled: false
         login_required: true
         login_url: https://internshala.com/login
     unstop:
-        enabled: true
+        enabled: false
         login_required: true
         login_url: https://unstop.com/login
+    indeed:
+        enabled: false
+        login_required: true
+        login_url: https://in.indeed.com/account/login
     hirist:
         enabled: false
         login_required: true
@@ -39,25 +43,34 @@ scrape_from:
         enabled: false
         login_required: true
         login_url: https://www.foundit.in/login
-    indeed:
-        enabled: true
-        login_required: false
-        login_url: null
 
 apply_on:
-    greenhouse:
-        enabled: false
-    lever:
-        enabled: false
+    # Handlers are URL-pattern-routed automatically — this section is
+    # documentation only and does not enable/disable code paths.
     naukri:
         enabled: true
+        note: session-based, uses auth/naukri_session.json
     instahyre:
         enabled: true
+        note: session-based, uses auth/instahyre_session.json
     internshala:
         enabled: true
+        note: session-based, uses auth/internshala_session.json
     unstop:
         enabled: true
-    linkedin_easy_apply:
+        note: session-based, uses auth/unstop_session.json
+    indeed:
         enabled: true
+        note: session-based Quick Apply, uses auth/indeed_session.json
+    linkedin:
+        enabled: true
+        note: session-based Easy Apply, uses auth/linkedin_session.json
+    greenhouse:
+        enabled: true
+        note: no login needed; used for company Greenhouse ATS pages (via Indeed job_url_direct)
+    lever:
+        enabled: true
+        note: no login needed; used for company Lever ATS pages (via Indeed job_url_direct)
     generic:
         enabled: true
+        note: AI-guided fallback for any unrecognised ATS page; requires Gemini

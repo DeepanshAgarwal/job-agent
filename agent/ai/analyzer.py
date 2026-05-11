@@ -138,7 +138,10 @@ Rules:
                 msg = str(exc)
                 if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
                     match = re.search(r"retry[^\d]*(\d+)", msg, re.IGNORECASE)
-                    wait = int(match.group(1)) + 2 if match else 60
+                    raw_wait = int(match.group(1)) + 2 if match else 60
+                    wait = min(raw_wait, 120)  # never wait more than 2 minutes
+                    if raw_wait > 120:
+                        logger.warning(f"Analyzer: API requested {raw_wait}s wait — capping at 120s")
                     if attempt < max_retries - 1:
                         logger.warning(f"Analyzer: rate-limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
                         time.sleep(wait)

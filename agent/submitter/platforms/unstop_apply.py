@@ -18,13 +18,34 @@ from agent.submitter.session_manager import SessionManager
 class UnstopApplyHandler:
     """Handle application submission on Unstop.com."""
 
-    # TODO: Verify these selectors on live Unstop apply pages
-    _SELECTORS = {
-        "apply_btn": "button.apply-now-btn",
-        "cover_letter_area": "textarea.cover-letter",
-        "submit_btn": "button[type='submit'].apply-submit",
-        "success_indicator": "div.application-submitted",
-    }
+    # Selectors tried individually in order
+    _APPLY_BTN = [
+        "button:has-text('Quick Apply')",
+        "button:has-text('Apply now')",
+        "button:has-text('Apply Now')",
+        "a:has-text('Quick Apply')",
+        "div.apply-btn-wrap button",
+        "aside button",
+        "button.apply-now-btn",
+        "button[class*='apply']",
+    ]
+    _CL_AREA = [
+        "textarea.cover-letter",
+        "textarea[name*='cover']",
+        "textarea",
+    ]
+    _SUBMIT_BTN = [
+        "button[type='submit'].apply-submit",
+        "button[type='submit']:has-text('Submit')",
+        "button:has-text('Submit')",
+        "button:has-text('Apply')",
+    ]
+    _SUCCESS = [
+        "div.application-submitted",
+        "div:has-text('applied successfully')",
+        "div:has-text('Application submitted')",
+        "div:has-text('Successfully applied')",
+    ]
 
     async def fill(
         self,
@@ -55,32 +76,87 @@ class UnstopApplyHandler:
             session_page = await context.new_page()
 
             try:
-                await session_page.goto(job["url"], wait_until="networkidle", timeout=45_000)
+                original_url = job["url"]
+                await session_page.goto(original_url, wait_until="networkidle", timeout=45_000)
 
-                # Wait for apply button (Unstop is SPA — content loads after initial render)
-                apply_btn = session_page.locator(self._SELECTORS["apply_btn"])
+                # Explicitly wait for the Quick Apply button — Unstop is a React
+                # SPA and the apply button renders several seconds after paint.
+                _BTN_SEL = ", ".join(self._APPLY_BTN[:4])
                 try:
-                    await apply_btn.wait_for(timeout=10_000)
+                    await session_page.wait_for_selector(_BTN_SEL, timeout=12_000, state="visible")
                 except Exception:  # noqa: BLE001
-                    logger.warning(f"UnstopApply: apply button not found for {job.get('url')}")
+                    pass
+                await session_page.wait_for_timeout(1_000)
+
+                # ── Click apply button ────────────────────────────────────────
+                clicked = False
+                for sel in self._APPLY_BTN:
+                    try:
+                        btn = session_page.locator(sel).first
+                        if await btn.is_visible(timeout=2_000):
+                            await btn.click()
+                            clicked = True
+                            logger.debug(f"UnstopApply: clicked apply via '{sel}'")
+                            break
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                if not clicked:
+                    logger.warning(f"UnstopApply: apply button not found for {original_url}")
                     return {"status": "failed", "error": "Apply button not found"}
 
-                await apply_btn.click()
-                await session_page.wait_for_timeout(1500)
+                await session_page.wait_for_timeout(2_000)
 
-                # Fill cover letter if field is visible
-                cl_area = session_page.locator(self._SELECTORS["cover_letter_area"])
-                if await cl_area.count() > 0:
-                    await cl_area.fill(cover_letter)
+                # ── Fill cover letter if visible ──────────────────────────────
+                for cl_sel in self._CL_AREA:
+                    try:
+                        cl = session_page.locator(cl_sel).first
+                        if await cl.is_visible(timeout=800):
+                            await cl.fill(cover_letter)
+                            break
+                    except Exception:  # noqa: BLE001
+                        pass
 
                 if dry_run:
                     logger.info("UnstopApply: dry_run=True — form interacted but not submitted")
                     return {"status": "dry_run", "error": ""}
 
-                submit_btn = session_page.locator(self._SELECTORS["submit_btn"])
-                if await submit_btn.count() > 0:
-                    await submit_btn.click()
-                    await session_page.wait_for_load_state("networkidle", timeout=20_000)
+                # ── Submit ────────────────────────────────────────────────────
+                submitted = False
+                for sub_sel in self._SUBMIT_BTN:
+                    try:
+                        sub = session_page.locator(sub_sel).first
+                        if await sub.is_visible(timeout=2_000):
+                            await sub.click()
+                            submitted = True
+                            logger.debug(f"UnstopApply: clicked submit via '{sub_sel}'")
+                            break
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                if not submitted:
+                    return {"status": "failed", "error": "Submit button not found"}
+
+                await session_page.wait_for_timeout(4_000)
+
+                # ── Check success ─────────────────────────────────────────────
+                confirmed = False
+                for succ_sel in self._SUCCESS:
+                    try:
+                        if await session_page.locator(succ_sel).count() > 0:
+                            confirmed = True
+                            break
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                # URL changed away from job page = success
+                if not confirmed and session_page.url != original_url:
+                    confirmed = True
+                    logger.debug("UnstopApply: URL changed after submit — treating as success")
+
+                if not confirmed:
+                    logger.warning(f"UnstopApply: no success indicator for {job.get('company')} — marking failed")
+                    return {"status": "failed", "error": "no confirmation after submit"}
 
                 logger.info(f"UnstopApply: applied to {job.get('company')} — {job.get('title')}")
                 return {"status": "applied", "error": ""}
@@ -89,6 +165,11 @@ class UnstopApplyHandler:
                 logger.error(f"UnstopApplyHandler.fill error: {exc}")
                 return {"status": "failed", "error": str(exc)}
             finally:
+                try:
+                    screenshot_path = f"data/screenshots/unstop_{job.get('company', 'unknown')[:20]}.png"
+                    await session_page.screenshot(path=screenshot_path)
+                except Exception:  # noqa: BLE001
+                    pass
                 await session_page.close()
                 await context.close()
                 await browser.close()
