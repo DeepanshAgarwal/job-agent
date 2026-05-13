@@ -13,8 +13,14 @@ or gspread is not installed, all methods degrade gracefully to no-ops.
 import os
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from loguru import logger
+
+_IST = ZoneInfo("Asia/Kolkata")
+
+def _now_str(fmt: str = "%Y-%m-%d %H:%M IST") -> str:
+    return datetime.now(tz=_IST).strftime(fmt)
 
 _SHEET_HEADERS = [
     "Date",             # 0  timestamp of the event (shortlisted / applied)
@@ -119,7 +125,7 @@ class SheetsTracker:
         # Truncate notes — failure_reason can contain full Playwright tracebacks
         notes = str(job.get("notes", "") or "")[:400]
         row_data = [
-            datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            _now_str(),
             job.get("company", "") or "(unknown)",
             job.get("title", ""),
             url,
@@ -177,7 +183,7 @@ class SheetsTracker:
         reasons = job.get("match_reasons") or []
         reasons_str = reasons if isinstance(reasons, str) else "; ".join(reasons)
         row_data = [
-            datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+            _now_str(),
             job.get("company", "") or "(unknown)",
             job.get("title", ""),
             url,
@@ -241,7 +247,7 @@ class SheetsTracker:
         try:
             ws.clear()
             ws.append_row(["Metric", "Value", "Updated At"])
-            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+            now = _now_str("%Y-%m-%d %H:%M IST")
             ws.append_row(["Total Applied", stats.get("total_applied", 0), now])
             for platform, count in stats.get("by_platform", {}).items():
                 ws.append_row([f"Platform: {platform}", count, now])

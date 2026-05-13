@@ -19,11 +19,12 @@ _BASE_URL = "https://internshala.com"
 class InternshalasScraper(BaseScraper):
     """Scraper for Internshala.com using Playwright + saved session."""
 
-    async def scrape(self, preferences: dict) -> list[dict[str, Any]]:
+    async def scrape(self, preferences: dict, on_search_done: Any = None) -> list[dict[str, Any]]:
         """Scrape job listings from Internshala.com.
 
         Args:
             preferences: Loaded preferences.yaml dict.
+            on_search_done: Optional callback invoked after each role search completes.
 
         Returns:
             List of canonical job dicts; empty list on any failure.
@@ -49,6 +50,9 @@ class InternshalasScraper(BaseScraper):
                     jobs.extend(page_jobs)
                 except Exception as exc:  # noqa: BLE001
                     logger.error(f"InternshalasScraper: error for '{role}': {exc}")
+                finally:
+                    if on_search_done:
+                        on_search_done()
 
             await context.close()
             await browser.close()

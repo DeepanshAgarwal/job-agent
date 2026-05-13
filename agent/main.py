@@ -38,7 +38,8 @@ from agent.scraper.foundit import FounditScraper
 from agent.scraper.hirist import HiristScraper
 from agent.scraper.instahyre import InstaHyreScraper
 from agent.scraper.internshala import InternshalasScraper
-from agent.scraper.jobspy_scraper import JobSpyScraper
+from agent.scraper.indeed import IndeedScraper
+from agent.scraper.linkedin import LinkedInScraper
 from agent.scraper.naukri import NaukriScraper
 from agent.scraper.unstop import UnstopScraper
 from agent.tracker.database import Database
@@ -49,17 +50,6 @@ load_dotenv()
 
 # Log level: WARNING by default — only errors/warnings surface to the console.
 # Run with --debug to restore full verbose output.
-_DEBUG_MODE = "--debug" in sys.argv
-logger.remove()
-logger.add(
-    sys.stderr,
-    level="DEBUG" if _DEBUG_MODE else "WARNING",
-    colorize=True,
-    format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
-)
-
-# Log level: WARNING by default so only errors surface at the console.
-# Pass --debug to restore verbose output.
 _DEBUG_MODE = "--debug" in sys.argv
 logger.remove()
 logger.add(
@@ -165,8 +155,10 @@ def build_scraper_list(platforms: dict) -> list:
         scrapers.append(InternshalasScraper())
     if scrape_cfg.get("unstop", {}).get("enabled"):
         scrapers.append(UnstopScraper())
-    if scrape_cfg.get("linkedin", {}).get("enabled") or scrape_cfg.get("indeed", {}).get("enabled"):
-        scrapers.append(JobSpyScraper())
+    if scrape_cfg.get("linkedin", {}).get("enabled"):
+        scrapers.append(LinkedInScraper())
+    if scrape_cfg.get("indeed", {}).get("enabled"):
+        scrapers.append(IndeedScraper())
     return scrapers
 
 
@@ -369,6 +361,7 @@ async def run_pipeline(args: argparse.Namespace, config: dict) -> None:
                 description=f"[red]✗ {short}[/red] — error",
                 completed=searches_per_scraper,
             )
+            progress.advance(global_task, searches_per_scraper)
             return name, []
 
     with Progress(

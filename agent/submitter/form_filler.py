@@ -10,8 +10,11 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from loguru import logger
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 _SCREENSHOTS_DIR = Path(__file__).parent.parent.parent / "data" / "screenshots"
 
@@ -64,7 +67,7 @@ class FormFiller:
         platform = self._detect_platform(url)
 
         _SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(tz=_IST).strftime("%Y%m%d_%H%M%S")
         safe_company = re.sub(r"[^a-zA-Z0-9]", "_", job.get("company", "unknown"))[:30]
         screenshot_path = str(_SCREENSHOTS_DIR / f"{ts}_{safe_company}_{platform}.png")
 

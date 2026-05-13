@@ -25,11 +25,12 @@ _JOB_LINK_RE = re.compile(r"/jobs/[^/?#]+-\d+$")
 class UnstopScraper(BaseScraper):
     """Scraper for Unstop.com using Playwright + saved session."""
 
-    async def scrape(self, preferences: dict) -> list[dict[str, Any]]:
+    async def scrape(self, preferences: dict, on_search_done: Any = None) -> list[dict[str, Any]]:
         """Scrape job listings from Unstop.com.
 
         Args:
             preferences: Loaded preferences.yaml dict.
+            on_search_done: Optional callback invoked after each role search completes.
 
         Returns:
             List of canonical job dicts; empty list on any failure.
@@ -55,6 +56,9 @@ class UnstopScraper(BaseScraper):
                     jobs.extend(page_jobs)
                 except Exception as exc:  # noqa: BLE001
                     logger.error(f"UnstopScraper error for '{role}': {exc}")
+                finally:
+                    if on_search_done:
+                        on_search_done()
 
             await context.close()
             await browser.close()

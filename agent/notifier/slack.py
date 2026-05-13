@@ -12,11 +12,14 @@ import os
 import time
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import urllib.request
 import urllib.error
 
 from loguru import logger
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 
 class SlackNotifier:
@@ -36,7 +39,7 @@ class SlackNotifier:
     def notify_start(self) -> None:
         """Send an agent-started notification."""
         self._post({
-            "text": f"🤖 *Job Agent started* — {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+            "text": f"🤖 *Job Agent started* — {datetime.now(tz=_IST).strftime('%Y-%m-%d %H:%M IST')}"
         })
 
     def notify_scrape_complete(self, count: int) -> None:

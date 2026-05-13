@@ -9,6 +9,9 @@ import hashlib
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 
 class BaseScraper(ABC):
@@ -28,7 +31,7 @@ class BaseScraper(ABC):
     )
 
     @abstractmethod
-    async def scrape(self, preferences: dict) -> list[dict[str, Any]]:
+    async def scrape(self, preferences: dict, on_search_done: Any = None) -> list[dict[str, Any]]:
         """Scrape jobs matching *preferences* and return a list of job dicts.
 
         Each dict must contain at minimum: title, company, url, source.
@@ -53,8 +56,8 @@ class BaseScraper(ABC):
 
     @staticmethod
     def now_iso() -> str:
-        """Return the current UTC time as an ISO-8601 string."""
-        return datetime.utcnow().isoformat()
+        """Return the current IST time as an ISO-8601 string."""
+        return datetime.now(tz=_IST).isoformat()
 
     @staticmethod
     def build_job(

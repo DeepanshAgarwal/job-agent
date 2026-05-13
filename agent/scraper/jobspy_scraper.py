@@ -1,59 +1,38 @@
 """
-agent/scraper/jobspy_scraper.py — LinkedIn + Indeed via JobSpy.
+agent/scraper/jobspy_scraper.py — Base class for JobSpy-backed scrapers.
 
-Wraps the open-source python-jobspy library to pull jobs from LinkedIn
-and Indeed in a single call, then normalises them into the canonical
-job dict format used by the rest of the pipeline.
-
-Speed design
-────────────
-JobSpy calls are blocking (synchronous HTTP).  We offload each call to
-the default ThreadPoolExecutor and cap concurrency with a semaphore so
-we never open more than MAX_CONCURRENT simultaneous outbound connections.
-Instead of searching every (role, city) pair we search (role, "India")
-+ (role, remote) — the `country_indeed` filter already scopes to India.
+Set `_SITE = "linkedin"` or `_SITE = "indeed"` in a subclass.
+See linkedin.py and indeed.py for the concrete scrapers.
 """
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 
 from agent.scraper.base_scraper import BaseScraper
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 # Maximum concurrent JobSpy threads (keep low to avoid IP bans).
 _MAX_CONCURRENT = 3
 
 
 class JobSpyScraper(BaseScraper):
-    """Scraper backed by the JobSpy library (LinkedIn + Indeed)."""
+    """Base scraper backed by the JobSpy library. Subclass and set _SITE."""
 
-    async def scrape(self, preferences: dict) -> list[dict[str, Any]]:
-        """Return job listings from LinkedIn and Indeed.
+    _SITE: str = ""  # "linkedin" or "indeed" — must be set by subclasses
 
-        Args:
-            preferences: Loaded preferences.yaml dict.
-
-        Returns:
-            List of normalised job dicts.
-        """
-        try:
-            from jobspy import scrape_jobs  # type: ignore[import]
-        except ImportError:
-            logger.warning("JobSpyScraper: jobspy not installed — skipping.")
-            return []
+    async def scrape(self, preferences: dict, on_search_done: Any = None) -> list[dict[str, Any]]:
+        if not self._SITE:
+            raise NotImplementedError(f"{self.__class__.__name__}: _SITE must be set")
 
         roles: list[str] = preferences.get("roles", ["Software Engineer"])
         locations: list[str] = preferences.get("locations", ["Remote"])
         hours_old: int = preferences.get("posted_within_hours", 24)
 
-        # Build search combinations.  Each city location is searched separately
-        # so LinkedIn returns city-scoped results.  "Remote" variants use
-        # is_remote=True with an empty location string.
-        # country_indeed="india" is always set explicitly — passing a city name
-        # as the location would otherwise be misdetected as the country, causing
-        # "Invalid country string" errors for city names and "Remote".
         _REMOTE_KEYWORDS = {"remote", "work from home", "wfh"}
         combos: list[tuple[str, str, bool]] = []  # (role, location, is_remote)
         for role in roles:
@@ -63,36 +42,48 @@ class JobSpyScraper(BaseScraper):
                 else:
                     combos.append((role, loc, False))
 
+        site = self._SITE
         sem = asyncio.Semaphore(_MAX_CONCURRENT)
         loop = asyncio.get_event_loop()
 
         def _fetch(role: str, location: str, is_remote: bool) -> list[dict[str, Any]]:
             try:
-                df = scrape_jobs(
-                    site_name=["linkedin", "indeed"],
-                    search_term=role,
-                    location=location,
-                    results_wanted=50,
-                    hours_old=hours_old,
-                    country_indeed="india",
-                    is_remote=is_remote,
-                )
+                from jobspy import scrape_jobs  # type: ignore[import]  # noqa: PLC0415
+                import logging as _log  # noqa: PLC0415
+                # scrape_jobs re-registers its own handlers during execution so
+                # pre-call suppression alone doesn't work.  Disable INFO globally
+                # for the duration of the call to silence "finished scraping" noise.
+                _log.disable(_log.INFO)
+                try:
+                    df = scrape_jobs(
+                        site_name=[site],
+                        search_term=role,
+                        location=location,
+                        results_wanted=50,
+                        hours_old=hours_old,
+                        country_indeed="india",
+                        is_remote=is_remote,
+                    )
+                finally:
+                    _log.disable(_log.NOTSET)
                 if df is None or df.empty:
                     return []
                 return self._normalise(df, hours_old)
             except Exception as exc:  # noqa: BLE001
                 label = "remote" if is_remote else location
-                logger.error(f"JobSpy error for '{role}' ({label}): {exc}")
+                logger.error(f"{self.__class__.__name__} error for '{role}' ({label}): {exc}")
                 return []
 
         async def _fetch_async(role: str, location: str, is_remote: bool) -> list[dict[str, Any]]:
             async with sem:
-                return await loop.run_in_executor(None, _fetch, role, location, is_remote)
+                result = await loop.run_in_executor(None, _fetch, role, location, is_remote)
+            if on_search_done:
+                on_search_done()
+            return result
 
         batch = await asyncio.gather(*[_fetch_async(r, loc, rem) for r, loc, rem in combos])
         jobs: list[dict[str, Any]] = [j for sub in batch for j in sub]
 
-        # De-duplicate within this batch by URL
         seen: set[str] = set()
         unique: list[dict[str, Any]] = []
         for job in jobs:
@@ -100,12 +91,12 @@ class JobSpyScraper(BaseScraper):
                 seen.add(job["url"])
                 unique.append(job)
 
-        logger.info(f"JobSpyScraper: {len(unique)} unique jobs found")
+        logger.info(f"{self.__class__.__name__}: {len(unique)} unique jobs found")
         return unique
 
     def _normalise(self, df: Any, hours_old: int) -> list[dict[str, Any]]:
         """Convert a JobSpy DataFrame to a list of canonical job dicts."""
-        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=hours_old)
+        cutoff = datetime.now(tz=_IST) - timedelta(hours=hours_old)
         jobs: list[dict[str, Any]] = []
 
         for _, row in df.iterrows():
@@ -127,9 +118,10 @@ class JobSpyScraper(BaseScraper):
             if raw_date:
                 try:
                     if isinstance(raw_date, datetime):
-                        dt = raw_date if raw_date.tzinfo else raw_date.replace(tzinfo=timezone.utc)
+                        dt = raw_date.astimezone(_IST) if raw_date.tzinfo else raw_date.replace(tzinfo=_IST)
                     else:
-                        dt = datetime.fromisoformat(str(raw_date)).replace(tzinfo=timezone.utc)
+                        from datetime import timezone  # noqa: PLC0415
+                        dt = datetime.fromisoformat(str(raw_date)).replace(tzinfo=timezone.utc).astimezone(_IST)
                     if dt < cutoff:
                         continue  # too old
                     posted_at = dt.isoformat()
@@ -158,8 +150,6 @@ class JobSpyScraper(BaseScraper):
                     source=source,
                     location=str(row.get("location") or ""),
                     description=str(row.get("description") or "") or (
-                        # LinkedIn often returns empty descriptions due to anti-scraping.
-                        # Fall back to title+company+location so embedding has signal.
                         f"{row.get('title', '')} at {row.get('company', '')}, {row.get('location', '')}"
                         if source == "linkedin"
                         else ""
@@ -169,3 +159,4 @@ class JobSpyScraper(BaseScraper):
                 )
             )
         return jobs
+

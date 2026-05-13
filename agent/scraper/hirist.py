@@ -29,11 +29,12 @@ _SEARCH_URL = "https://www.hirist.tech/search/{role}/"
 class HiristScraper(BaseScraper):
     """Scraper for Hirist.com using Playwright (no login required)."""
 
-    async def scrape(self, preferences: dict) -> list[dict[str, Any]]:
+    async def scrape(self, preferences: dict, on_search_done: Any = None) -> list[dict[str, Any]]:
         """Scrape job listings from Hirist.com.
 
         Args:
             preferences: Loaded preferences.yaml dict.
+            on_search_done: Optional callback invoked after each role search completes.
 
         Returns:
             List of canonical job dicts; empty list on any failure.
@@ -57,6 +58,9 @@ class HiristScraper(BaseScraper):
                     jobs.extend(page_jobs)
                 except Exception as exc:  # noqa: BLE001
                     logger.error(f"HiristScraper error for '{role}': {exc}")
+                finally:
+                    if on_search_done:
+                        on_search_done()
 
             await context.close()
             await browser.close()

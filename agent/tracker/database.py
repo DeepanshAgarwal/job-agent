@@ -24,8 +24,15 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from loguru import logger
+
+_IST = ZoneInfo("Asia/Kolkata")
+
+def _now() -> str:
+    """Current IST time as ISO-8601 string."""
+    return datetime.now(tz=_IST).isoformat()
 
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "job_agent.db"
 
@@ -152,12 +159,12 @@ class Database:
 
     def create_session(self, resume_hash: str = "", prefs_hash: str = "") -> str:
         """Create a new session row and return its ID (ISO timestamp string)."""
-        session_id = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+        session_id = datetime.now(tz=_IST).strftime("%Y-%m-%dT%H:%M:%S")
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO sessions (id, started_at, resume_hash, prefs_hash) "
                 "VALUES (?, ?, ?, ?)",
-                (session_id, datetime.utcnow().isoformat(), resume_hash, prefs_hash),
+                (session_id, _now(), resume_hash, prefs_hash),
             )
         logger.info(f"Session started: {session_id}")
         return session_id
@@ -178,7 +185,7 @@ class Database:
                 WHERE id = ?
                 """,
                 (
-                    datetime.utcnow().isoformat(),
+                    _now(),
                     counts.get("total_scraped", 0),
                     counts.get("total_scored", 0),
                     counts.get("total_gemini", 0),
@@ -193,7 +200,7 @@ class Database:
 
     def upsert_jobs(self, jobs: list[dict[str, Any]]) -> None:
         """Insert new jobs; ignore duplicates (canonical data never overwritten)."""
-        now = datetime.utcnow().isoformat()
+        now = _now()
         with self._connect() as conn:
             conn.executemany(
                 "INSERT OR IGNORE INTO jobs "
@@ -232,7 +239,7 @@ class Database:
             conn.execute(
                 "UPDATE session_jobs SET embedding_score = ?, scored_at = ? "
                 "WHERE session_id = ? AND url = ?",
-                (score, datetime.utcnow().isoformat(), session_id, url),
+                (score, _now(), session_id, url),
             )
 
     def record_gemini_decision(
@@ -266,7 +273,7 @@ class Database:
                     decision,
                     outcome,
                     failure_reason,
-                    datetime.utcnow().isoformat(),
+                    _now(),
                     session_id,
                     url,
                 ),
@@ -282,7 +289,7 @@ class Database:
     ) -> None:
         """Record the final apply outcome for a job in this session."""
         self._ensure_session_job(session_id, url)
-        applied_at = datetime.utcnow().isoformat() if outcome == "applied" else None
+        applied_at = _now() if outcome == "applied" else None
         with self._connect() as conn:
             conn.execute(
                 """
@@ -298,7 +305,7 @@ class Database:
 
     def set_outcome_bulk(self, session_id: str, urls: list[str], outcome: str) -> None:
         """Set the same outcome tag for multiple jobs in one transaction."""
-        now = datetime.utcnow().isoformat()
+        now = _now()
         with self._connect() as conn:
             conn.executemany(
                 "INSERT OR IGNORE INTO session_jobs (session_id, url) VALUES (?, ?)",
@@ -326,7 +333,7 @@ class Database:
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO seen_jobs (url, seen_at, session_id) VALUES (?, ?, ?)",
-                (url, datetime.utcnow().isoformat(), session_id or None),
+                (url, _now(), session_id or None),
             )
 
     # ── Query helpers ─────────────────────────────────────────────────────
@@ -452,7 +459,7 @@ class Database:
                         job.get("gemini_score"),
                         json.dumps(job.get("match_reasons") or []),
                         job.get("status", "applied"),
-                        datetime.utcnow().isoformat(),
+                        _now(),
                         job.get("notes", ""),
                     ),
                 )
